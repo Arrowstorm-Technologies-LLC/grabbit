@@ -50,8 +50,9 @@ usage() {
   echo -e "  • Detects distro and uses correct package manager syntax automatically"
   echo -e "  • Transposes commands when loading a file created on a different distro (apt ↔ pacman etc.)"
   echo -e "  • Uses paru for AUR packages (auto-installs paru if needed on Arch)"
-  echo -e "  • Auto-installs package managers/helpers (Homebrew, paru) if referenced in the file"
-  echo -e "  • Excludes most distro base packages by using explicit/manual install lists"
+  echo -e "  • Auto-installs package managers/helpers (Homebrew, paru, snapd, flatpak) if referenced"
+  echo -e "  • Excludes most distro base packages by using explicit/manual install lists + heuristics"
+  echo -e "  • When a package name matches multiple sources (mainline vs AUR etc.) on load: prompts you to choose (interactive only)"
   echo ""
   echo -e "File created by save is self-contained and contains everything needed for load."
   exit 1
@@ -76,6 +77,26 @@ ok() {
 
 warn() {
   echo -e "   ${YELLOW}⚠${RESET}  $*"
+}
+
+_pick_option() {
+  local prompt="$1"; shift
+  local -a items=("$@")
+  local i=1 choice
+  for item in "${items[@]}"; do
+    printf "   ${CYAN}%3d)${RESET}  %s\n" "$i" "$item"
+    ((i++))
+  done
+  echo ""
+  while true; do
+    printf "   ${BOLD}%s${RESET} " "$prompt"
+    read -r choice < /dev/tty || choice=""
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#items[@]} )); then
+      echo "${items[$((choice-1))]}"
+      return 0
+    fi
+    warn "Enter a number between 1 and ${#items[@]}."
+  done
 }
 
 # ── configuration ─────────────────────────────────────────────────────────────
@@ -255,7 +276,7 @@ collect_packages() {
   printf '%s\n' "${final[@]}"
 }
 
-# ── native repo preference check ────────────────────────────────────────────
+# ── sophisticated repo / source availability checks ─────────────────────────
 is_available_in_native_repos() {
   local pkg="$1"
   case "$PM" in
@@ -278,6 +299,55 @@ is_available_in_native_repos() {
       return 1
       ;;
   esac
+}
+
+# Returns list of "source:method" available for this pkg on current system
+# source: official, aur, snap, flatpak, brew
+get_available_install_options() {
+  local pkg="$1"
+  local -a opts=()
+
+  # Official / mainline via current PM
+  if is_available_in_native_repos "$pkg"; then
+    opts+=("official (${PM})")
+  fi
+
+  # AUR (Arch specific, use RPC to detect without helper)
+  if [[ "$FAMILY" == "arch" ]]; then
+    local aur_url="https://aur.archlinux.org/rpc/?v=5&type=info&arg[]=${pkg}"
+    local aur_resp=""
+    if command -v curl >/dev/null 2>&1; then
+      aur_resp=$(curl -s --max-time 5 "$aur_url" 2>/dev/null || true)
+    elif command -v wget >/dev/null 2>&1; then
+      aur_resp=$(wget -qO- --timeout=5 "$aur_url" 2>/dev/null || true)
+    fi
+    if echo "$aur_resp" | grep -q '"resultcount":1'; then
+      opts+=("AUR (paru)")
+    fi
+  fi
+
+  # Snap
+  if command -v snap >/dev/null 2>&1; then
+    if snap info "$pkg" 2>/dev/null | grep -q "^name: ${pkg}"; then
+      opts+=("Snap (snap)")
+    fi
+  fi
+
+  # Flatpak
+  if command -v flatpak >/dev/null 2>&1; then
+    if flatpak search "$pkg" 2>/dev/null | grep -q "$pkg"; then
+      opts+=("Flatpak (flathub)")
+    fi
+  fi
+
+  # Brew
+  if command -v brew >/dev/null 2>&1; then
+    if brew search --formulae "^${pkg}$" 2>/dev/null | grep -q "$pkg"; then
+      opts+=("Homebrew (brew)")
+    fi
+  fi
+
+  printf '%s\n' "${opts[@]}"
 }
 
 # ── improved base package exclusion heuristics ────────────────────────────────
@@ -604,13 +674,77 @@ do_load() {
     if [[ "$src" == "snap" ]] && command -v snap >/dev/null && snap list "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi
     if [[ "$src" == "flatpak" ]] && command -v flatpak >/dev/null && flatpak info "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi
 
-    effective_src="$src"
-    # Preference for native package managers: if the package exists in this distro's mainline repos
-    # (even if it came from external/AUR/ppa on the saving system), prefer the native install.
-    if [[ "$src" != "$PM" ]] && is_available_in_native_repos "$pkg"; then
-      effective_src="$PM"
-      info "Preferring native $PM repo for '$pkg' (available in mainline here, was $src on original)"
+    # Sophisticated multi-source detection
+    mapfile -t options < <(get_available_install_options "$pkg")
+
+    local chosen_method=""
+    local chosen_label=""
+
+    if [[ ${#options[@]} -eq 0 ]]; then
+      # No matches found, fall back to original src logic
+      chosen_method="$src"
+      info "No current-repo matches found for '$pkg' (original source: $src). Using transposed original method."
+    elif [[ ${#options[@]} -eq 1 ]]; then
+      chosen_method="${options[0]}"
+      info "Single option for '$pkg': ${options[0]}"
+    else
+      # Multiple options: prompt if interactive
+      if [[ -t 0 ]]; then
+        step "Multiple installation options found for '$pkg' (original source was: $src)"
+        chosen_label=$(_pick_option "Select option:" "${options[@]}")
+        chosen_method="$chosen_label"
+        info "User selected: $chosen_method for $pkg"
+      else
+        # Non-interactive: prefer official/native if present, else first
+        chosen_method="${options[0]}"
+        for opt in "${options[@]}"; do
+          if [[ "$opt" == official* ]]; then
+            chosen_method="$opt"
+            break
+          fi
+        done
+        info "Non-interactive: auto-selected $chosen_method for '$pkg' (multiple available)"
+      fi
     fi
+
+    # Map chosen_method (human label) to a src-like for get_install_command
+    local effective_src="$src"
+    case "$chosen_method" in
+      official*)
+        effective_src="$PM"  # will use native INSTALL_CMD
+        ;;
+      AUR*)
+        effective_src="aur"
+        ;;
+      Snap*)
+        effective_src="snap"
+        ;;
+      Flatpak*)
+        effective_src="flatpak"
+        ;;
+      Homebrew*)
+        effective_src="brew"
+        ;;
+      *)
+        effective_src="$chosen_method"  # fallback
+        ;;
+    esac
+
+    # Ensure helper for the chosen method if needed (lazy)
+    case "$chosen_method" in
+      AUR*)
+        ensure_helper paru || { warn "Cannot use AUR for $pkg"; ((failed++)) || true; continue; }
+        ;;
+      Homebrew*)
+        ensure_helper brew || { warn "Cannot use brew for $pkg"; ((failed++)) || true; continue; }
+        ;;
+      Snap*)
+        ensure_helper snap || { warn "Cannot use snap for $pkg"; ((failed++)) || true; continue; }
+        ;;
+      Flatpak*)
+        ensure_helper flatpak || { warn "Cannot use flatpak for $pkg"; ((failed++)) || true; continue; }
+        ;;
+    esac
 
     local cmd
     cmd=$(get_install_command "$pkg" "$effective_src" "$orig_family")
@@ -621,7 +755,7 @@ do_load() {
       continue
     fi
 
-    info "Installing $pkg from $src → $cmd"
+    info "Installing $pkg (chose $chosen_method) → $cmd"
     if eval "$cmd"; then
       ok "Installed: $pkg"
       ((installed++)) || true

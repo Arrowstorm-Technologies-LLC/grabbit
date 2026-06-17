@@ -79,13 +79,29 @@ The file created by `save` is plain text and contains:
 
 You can read it with `cat`, version control it, or copy it anywhere.
 
-### Native repo preference
+### Sophisticated source selection on load
 
-When loading, if a package was originally from an external source (AUR, PPA, etc.) on the saving system, grabbit will check if the package name exists in the *mainline/official* repositories of the *loading* distro.
+When restoring, grabbit queries the current system for all places a package name is available:
 
-If it does, grabbit prefers the native package manager for that package (e.g. an AUR package name that exists officially on the target will be installed via `pacman` instead of attempting AUR).
+- Official/mainline repos of the current package manager
+- AUR (on Arch, via RPC query)
+- Snap, Flatpak, Homebrew (if commands present)
 
-This makes cross-distro restores more robust.
+If exactly one option, it uses it (with transposition where appropriate).
+
+If **multiple options** share the same name (e.g. a package exists in mainline *and* AUR, or cross-distro name collision), grabbit will **prompt you interactively** to choose:
+
+```
+Multiple installation options found for 'foo' (original source was: aur)
+   1) official (pacman)
+   2) AUR (paru)
+   3) ...
+Select option: 
+```
+
+Non-interactive runs (no tty) will auto-prefer the first "official" match if available.
+
+This handles ambiguous names gracefully while preferring user control.
 
 ## How load works
 
