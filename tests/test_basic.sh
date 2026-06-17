@@ -43,3 +43,4 @@ echo "  New features present in source OK"
 
 echo ""
 echo "All basic tests passed."
+echo "Cross-distro / multi-PM tests covered in examples/ and manual verification recommended."
