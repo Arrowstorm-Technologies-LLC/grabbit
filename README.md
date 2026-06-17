@@ -26,6 +26,32 @@ grabbit -x aur load minimal.grab      # restore while ignoring AUR packages
 - Supports zypper, apk, snap, flatpak in addition to apt/pacman/dnf/brew/aur.
 - Prefers native mainline repos during cross-distro loads when possible.
 
+## GUI Variant
+
+A graphical interface is available for manual auditing of grab files:
+
+```sh
+./grabbit_gui.py
+# or
+python3 grabbit_gui.py
+```
+
+In the GUI you can:
+
+- Scan your current system (equivalent to `grabbit save`)
+- Open an existing `.grab` file
+- Use the search box and per-source checkboxes to filter the package list (replaces the `-x` CLI flag)
+- Toggle individual packages or use "Select All Visible", "Deselect All Visible", "Invert"
+- Save the audited selection as a new grab file
+- Preview the exact commands that would be run for the selected packages (with transposition applied)
+- Execute the load for the audited selection
+
+The GUI uses only Python's standard library (`tkinter`). On most desktop Linux distributions you may need to install the Tk package:
+
+- Debian/Ubuntu: `sudo apt install python3-tk`
+- Arch: `sudo pacman -S tk`
+- Fedora: `sudo dnf install python3-tkinter`
+
 ## Install
 
 ```sh
@@ -34,6 +60,41 @@ chmod +x ~/.local/bin/grabbit
 ```
 
 Make sure `~/.local/bin` is in your PATH.
+
+### GUI Launcher & Desktop Integration
+
+To run the GUI from command line:
+
+```sh
+# After cloning or downloading the repo
+./grabbit-gui                # or
+./grabbit-gui my-setup.grab
+```
+
+To make `grabbit-gui` available globally:
+
+```sh
+mkdir -p ~/.local/bin
+cp grabbit-gui ~/.local/bin/
+cp grabbit_gui.py ~/.local/bin/
+chmod +x ~/.local/bin/grabbit-gui
+```
+
+For desktop/start menu integration, copy the .desktop file:
+
+```sh
+mkdir -p ~/.local/share/applications
+cp grabbit-gui.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications/
+```
+
+You can then search for "grabbit-gui" in your application launcher.
+
+The GUI also supports:
+- Drag & drop of `.grab` files (best with `pip install tkinterdnd2`)
+- "Save" (to current file) and "Save As..."
+- Remembers the last used directory for open/save dialogs
+- Command line: `grabbit-gui somefile.grab` or `grabbit-gui --scan`
 
 ## Usage
 

@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=grabbit-gui
+Comment=GUI for auditing grabbit package grab files
+GenericName=Package List Auditor
+Exec=grabbit-gui %f
+Icon=system-software-install
+Terminal=false
+Type=Application
+Categories=Utility;System;PackageManager;
+Keywords=package;packages;grabbit;linux;aur;apt;pacman;backup;restore;
+MimeType=application/x-grabbit;
+StartupNotify=true
+Actions=Scan;
+
+[Desktop Action Scan]
+Name=Scan Current System
+Exec=grabbit-gui --scan
+Icon=system-search
