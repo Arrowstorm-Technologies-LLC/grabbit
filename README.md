@@ -188,6 +188,21 @@ Non-interactive runs (no tty) will auto-prefer the first "official" match if ava
 
 This handles ambiguous names gracefully while preferring user control.
 
+### Comparison to similar tools
+
+grabbit provides unified multi-source (native + AUR + brew + snap + flatpak) lists with automatic cross-distro transposition.
+
+| Approach/Tool | Scope | Source Tracking | Cross-Distro | GUI/Audit |
+|---------------|-------|-----------------|--------------|-----------|
+| grabbit     | Multi + unified grab file | Yes (native/AUR/brew/etc) | Yes (command + name map) | Yes (filters + select) |
+| Manual lists (pacman -Qe etc) | Single distro | Manual | No | No |
+| brew bundle | Homebrew only | Homebrew | No | Partial (file) |
+| apt-clone / mintbackup | Debian only | Limited | No | Yes (some) |
+| Warehouse | Flatpak | Flatpak | No | Yes |
+| Ansible/Nix | Full declarative | Full | Yes (strong) | Varies (heavy) |
+
+grabbit stays simple and focused on personal multi-ecosystem portable lists vs full config mgmt or single-ecosystem tools.
+
 ## How load works
 
 1. Detects your current distro and package manager.
