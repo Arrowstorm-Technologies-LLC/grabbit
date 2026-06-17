@@ -1,8 +1,8 @@
-# grabbit
-*.grab
+# grabbit (ignore generated user files, but allow examples)
 *.grb
 grabbit-*.tar
 test-*.grab
+!examples/*.grab
 
 # editor / os
 .idea/

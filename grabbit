@@ -80,7 +80,7 @@ warn() {
 
 # ── configuration ─────────────────────────────────────────────────────────────
 GRABBIT_VERSION="1"
-SUPPORTED_FAMILIES=(debian arch fedora)
+SUPPORTED_FAMILIES=(debian arch fedora suse alpine)
 
 # ── distro detection ──────────────────────────────────────────────────────────
 detect_distro() {
@@ -109,6 +109,16 @@ detect_distro() {
       PM="dnf"
       INSTALL_CMD="sudo dnf install -y"
       ;;
+    opensuse*|suse)
+      FAMILY="suse"
+      PM="zypper"
+      INSTALL_CMD="sudo zypper install -y"
+      ;;
+    alpine)
+      FAMILY="alpine"
+      PM="apk"
+      INSTALL_CMD="sudo apk add"
+      ;;
     *)
       # Fallback detection by available commands
       if command -v apt >/dev/null 2>&1; then
@@ -117,6 +127,10 @@ detect_distro() {
         FAMILY="arch"; PM="pacman"; INSTALL_CMD="sudo pacman -S --needed --noconfirm"
       elif command -v dnf >/dev/null 2>&1; then
         FAMILY="fedora"; PM="dnf"; INSTALL_CMD="sudo dnf install -y"
+      elif command -v zypper >/dev/null 2>&1; then
+        FAMILY="suse"; PM="zypper"; INSTALL_CMD="sudo zypper install -y"
+      elif command -v apk >/dev/null 2>&1; then
+        FAMILY="alpine"; PM="apk"; INSTALL_CMD="sudo apk add"
       else
         die "Unsupported or unknown Linux distribution: $DISTRO_NAME ($DISTRO_ID)"
       fi
@@ -166,6 +180,20 @@ collect_packages() {
         done < <(dnf repoquery --userinstalled 2>/dev/null | cut -d- -f1 | sort -u || dnf list --installed | awk '/^[^ ]/ {print $1}' | cut -d. -f1 || true)
       fi
       ;;
+    zypper)
+      if command -v zypper >/dev/null 2>&1; then
+        while IFS= read -r pkg; do
+          [[ -n "$pkg" ]] && pkgs+=("$pkg:zypper")
+        done < <(zypper packages --installed-only 2>/dev/null | awk '/^i/ {print $5}' | sort -u || rpm -qa --queryformat '%{NAME}\n' | head -100 || true)
+      fi
+      ;;
+    apk)
+      if command -v apk >/dev/null 2>&1; then
+        while IFS= read -r pkg; do
+          [[ -n "$pkg" ]] && pkgs+=("$pkg:apk")
+        done < <(apk info -v 2>/dev/null | cut -d- -f1 | sort -u || true)
+      fi
+      ;;
   esac
 
   # Homebrew (works on Linux too)
@@ -176,6 +204,20 @@ collect_packages() {
     while IFS= read -r pkg; do
       [[ -n "$pkg" ]] && pkgs+=("$pkg:brew")
     done < <(brew list --cask 2>/dev/null || true)
+  fi
+
+  # Snap packages (universal)
+  if command -v snap >/dev/null 2>&1; then
+    while IFS= read -r pkg; do
+      [[ -n "$pkg" && "$pkg" != "core" && "$pkg" != "snapd" ]] && pkgs+=("$pkg:snap")
+    done < <(snap list 2>/dev/null | awk 'NR>1 {print $1}' || true)
+  fi
+
+  # Flatpak packages (universal)
+  if command -v flatpak >/dev/null 2>&1; then
+    while IFS= read -r pkg; do
+      [[ -n "$pkg" ]] && pkgs+=("$pkg:flatpak")
+    done < <(flatpak list --app --columns=application 2>/dev/null || true)
   fi
 
   # Deduplicate and apply excludes
@@ -207,7 +249,87 @@ collect_packages() {
     fi
   done
 
+  # Apply improved base exclusion heuristics
+  mapfile -t final < <(filter_base_packages "${final[@]}")
+
   printf '%s\n' "${final[@]}"
+}
+
+# ── native repo preference check ────────────────────────────────────────────
+is_available_in_native_repos() {
+  local pkg="$1"
+  case "$PM" in
+    apt)
+      apt-cache policy "$pkg" 2>/dev/null | grep -q "Candidate:"
+      ;;
+    pacman)
+      pacman -Si "$pkg" &>/dev/null  # queries official sync databases
+      ;;
+    dnf)
+      dnf list --available "$pkg" &>/dev/null || dnf repoquery "$pkg" &>/dev/null
+      ;;
+    zypper)
+      zypper --quiet search --exact "$pkg" 2>/dev/null | grep -q "^i |^v "
+      ;;
+    apk)
+      apk search -x "$pkg" 2>/dev/null | grep -q "^${pkg}-"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# ── improved base package exclusion heuristics ────────────────────────────────
+filter_base_packages() {
+  local -a input_pkgs=("$@")
+  local -a output=()
+  local -a base_list=()
+
+  case "$FAMILY" in
+    debian)
+      base_list=(base-files bash coreutils debianutils diffutils findutils grep gzip hostname init-system-helpers libc-bin login mount ncurses-base passwd perl-base sed tar util-linux)
+      ;;
+    arch)
+      # Use pacman groups where possible
+      if command -v pacman >/dev/null 2>&1; then
+        mapfile -t base_list < <(pacman -Qg base base-devel 2>/dev/null | awk '{print $2}' | sort -u || true)
+      fi
+      base_list+=("linux" "linux-firmware" "systemd" "systemd-sysvcompat" "pacman" "glibc")
+      ;;
+    fedora)
+      base_list=(bash coreutils glibc rpm systemd dnf yum fedora-release)
+      ;;
+    suse)
+      base_list=(bash coreutils glibc systemd zypper suse-release)
+      ;;
+    alpine)
+      base_list=(alpine-baselayout busybox apk-tools)
+      ;;
+    *)
+      base_list=()
+      ;;
+  esac
+
+  for entry in "${input_pkgs[@]}"; do
+    pkg="${entry%%:*}"
+    src="${entry#*:}"
+    skip=false
+    for base in "${base_list[@]}"; do
+      if [[ "$pkg" == "$base" ]]; then
+        skip=true
+        break
+      fi
+    done
+    if ! $skip; then
+      output+=("$entry")
+    else
+      # silent base exclusion (was polluting captured list)
+      : # info "Excluding base package: $pkg" >&2
+    fi
+  done
+
+  printf '%s\n' "${output[@]}"
 }
 
 # ── ensure helper tools ───────────────────────────────────────────────────────
@@ -241,6 +363,32 @@ ensure_helper() {
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         fi
         ok "Homebrew installed"
+      fi
+      ;;
+    snap)
+      if ! command -v snap >/dev/null 2>&1; then
+        step "Ensuring snapd is installed (via native PM)"
+        case "$PM" in
+          apt) sudo apt update && sudo apt install -y snapd ;;
+          pacman) sudo pacman -S --needed --noconfirm snapd ;;
+          dnf) sudo dnf install -y snapd ;;
+          zypper) sudo zypper install -y snapd ;;
+          *) warn "Please install snapd manually for this distro" ;;
+        esac
+        # enable service if possible
+        sudo systemctl enable --now snapd.socket || true
+      fi
+      ;;
+    flatpak)
+      if ! command -v flatpak >/dev/null 2>&1; then
+        step "Ensuring flatpak is installed (via native PM)"
+        case "$PM" in
+          apt) sudo apt update && sudo apt install -y flatpak ;;
+          pacman) sudo pacman -S --needed --noconfirm flatpak ;;
+          dnf) sudo dnf install -y flatpak ;;
+          zypper) sudo zypper install -y flatpak ;;
+          *) warn "Please install flatpak manually for this distro" ;;
+        esac
       fi
       ;;
     *)
@@ -305,8 +453,8 @@ get_install_command() {
         echo "${INSTALL_CMD} $pkg"
       fi
       ;;
-    pacman|dnf)
-      if [[ "$FAMILY" == "arch" || "$FAMILY" == "fedora" ]]; then
+    pacman|dnf|zypper|apk)
+      if [[ "$FAMILY" == "arch" || "$FAMILY" == "fedora" || "$FAMILY" == "suse" || "$FAMILY" == "alpine" ]]; then
         echo "${INSTALL_CMD} $pkg"
       else
         # transpose to current
@@ -322,6 +470,12 @@ get_install_command() {
       ;;
     brew)
       echo "brew install $pkg"
+      ;;
+    snap)
+      echo "sudo snap install $pkg"
+      ;;
+    flatpak)
+      echo "flatpak install -y flathub $pkg"
       ;;
     *)
       echo "${INSTALL_CMD} $pkg"
@@ -404,12 +558,16 @@ do_load() {
 
   local need_paru=false
   local need_brew=false
+  local need_snap=false
+  local need_flatpak=false
 
   for entry in "${to_install[@]}"; do
     src="${entry#*:}"
     case "$src" in
       aur) need_paru=true ;;
       brew) need_brew=true ;;
+      snap) need_snap=true ;;
+      flatpak) need_flatpak=true ;;
     esac
   done
 
@@ -418,6 +576,12 @@ do_load() {
   fi
   if $need_brew; then
     ensure_helper brew || warn "Homebrew installation failed or not possible"
+  fi
+  if $need_snap; then
+    ensure_helper snap || warn "snapd installation may have issues"
+  fi
+  if $need_flatpak; then
+    ensure_helper flatpak || warn "flatpak installation may have issues"
   fi
 
   step "Installing packages (transposing commands as needed)"
@@ -433,10 +597,23 @@ do_load() {
       apt)    if dpkg -l "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
       pacman) if pacman -Q "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
       dnf)    if rpm -q "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
+      zypper) if rpm -q "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
+      apk)    if apk info -e "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
     esac
+    # also check snap/flatpak
+    if [[ "$src" == "snap" ]] && command -v snap >/dev/null && snap list "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi
+    if [[ "$src" == "flatpak" ]] && command -v flatpak >/dev/null && flatpak info "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi
+
+    effective_src="$src"
+    # Preference for native package managers: if the package exists in this distro's mainline repos
+    # (even if it came from external/AUR/ppa on the saving system), prefer the native install.
+    if [[ "$src" != "$PM" ]] && is_available_in_native_repos "$pkg"; then
+      effective_src="$PM"
+      info "Preferring native $PM repo for '$pkg' (available in mainline here, was $src on original)"
+    fi
 
     local cmd
-    cmd=$(get_install_command "$pkg" "$src" "$orig_family")
+    cmd=$(get_install_command "$pkg" "$effective_src" "$orig_family")
 
     if [[ "$cmd" == "# SKIP"* ]]; then
       warn "$cmd"

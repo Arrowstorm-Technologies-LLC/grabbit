@@ -1,0 +1,15 @@
+# GRABBIT v1
+# Example file created on Arch Linux
+# Contains native + AUR packages
+# ORIG_DISTRO=arch
+# ORIG_FAMILY=arch
+# ORIG_PM=pacman
+# ORIG_DISTRO_NAME="Arch Linux"
+
+PKG_LIST_START
+PKG neofetch:pacman
+PKG htop:pacman
+PKG paru-bin:aur
+PKG yay:aur
+PKG discord:aur
+PKG_LIST_END

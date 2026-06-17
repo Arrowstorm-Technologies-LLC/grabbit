@@ -1,0 +1,12 @@
+# GRABBIT v1
+# Hypothetical cross-distro file (created on Debian, to be loaded on Arch)
+# Note package names may need manual adjustment for real use
+# ORIG_DISTRO=debian
+# ORIG_FAMILY=debian
+# ORIG_PM=apt
+
+PKG_LIST_START
+PKG neofetch:apt
+PKG htop:apt
+PKG vim:apt
+PKG_LIST_END

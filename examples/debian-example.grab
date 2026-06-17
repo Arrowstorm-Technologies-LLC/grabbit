@@ -1,0 +1,17 @@
+# GRABBIT v1
+# Example file created on Debian/Ubuntu system
+# ORIG_DISTRO=ubuntu
+# ORIG_FAMILY=debian
+# ORIG_PM=apt
+# ORIG_DISTRO_NAME="Ubuntu 24.04"
+# 
+# This file was generated with: grabbit save debian-example.grab
+# Contains explicitly installed packages + externals (none in this example)
+
+PKG_LIST_START
+PKG neofetch:apt
+PKG htop:apt
+PKG curl:apt
+PKG git:apt
+PKG vim:apt
+PKG_LIST_END

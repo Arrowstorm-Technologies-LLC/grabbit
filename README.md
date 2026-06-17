@@ -21,8 +21,10 @@ grabbit -x aur load minimal.grab      # restore while ignoring AUR packages
 - Records the *original source* of each package.
 - On load, ensures required helpers exist (automatically installs paru and/or Homebrew when needed).
 - Transposes commands across distros: a file created with apt on Debian will use pacman on Arch (and vice versa).
-- `-x` modifier lets you exclude (or ignore on load) certain source types: `aur`, `brew`, `base`, etc.
+- `-x` modifier lets you exclude (or ignore on load) certain source types: `aur`, `brew`, `base`, `snap`, `flatpak`, etc.
 - Pure Bash with only standard tools + whatever package manager you already have.
+- Supports zypper, apk, snap, flatpak in addition to apt/pacman/dnf/brew/aur.
+- Prefers native mainline repos during cross-distro loads when possible.
 
 ## Install
 
@@ -57,10 +59,14 @@ When you just write `grabbit -x save ...` (no types after `-x`) it performs a fu
 
 grabbit tries hard to record only packages *you* asked for:
 
-- Debian family → `apt-mark showmanual`
-- Arch family → `pacman -Qe` + `pacman -Qem` (foreign = AUR)
-- Fedora family → best-effort dnf user-installed list
-- Homebrew → all formulae and casks
+- Debian/Ubuntu etc. → `apt-mark showmanual`
+- Arch etc. → `pacman -Qe` + `pacman -Qem` (AUR)
+- Fedora etc. → dnf user-installed
+- openSUSE → zypper
+- Alpine → apk
+- Universal: Snap, Flatpak, Homebrew (formulae + casks)
+
+Improved base exclusion heuristics are applied per distro (known base groups and meta-packages are filtered).
 
 It does **not** try to capture every single dependency (those will be pulled in automatically during load).
 
@@ -69,9 +75,17 @@ It does **not** try to capture every single dependency (those will be pulled in 
 The file created by `save` is plain text and contains:
 
 - Origin distro and package manager
-- List of packages + their source (`apt`, `aur`, `brew`, etc.)
+- List of packages + their source (`apt`, `aur`, `brew`, `snap`, `flatpak`, `zypper`, `apk`, etc.)
 
 You can read it with `cat`, version control it, or copy it anywhere.
+
+### Native repo preference
+
+When loading, if a package was originally from an external source (AUR, PPA, etc.) on the saving system, grabbit will check if the package name exists in the *mainline/official* repositories of the *loading* distro.
+
+If it does, grabbit prefers the native package manager for that package (e.g. an AUR package name that exists officially on the target will be installed via `pacman` instead of attempting AUR).
+
+This makes cross-distro restores more robust.
 
 ## How load works
 
@@ -116,8 +130,14 @@ grabbit load clean.grab
 - Some packages are not available everywhere (e.g. most AUR packages only make sense on Arch).
 - Homebrew on Linux installs to `/home/linuxbrew` by default.
 - The script will ask for sudo when needed.
-- No support (yet) for Snap, Flatpak, pip, cargo, etc. Only the main native managers + AUR + Homebrew.
-- Base package exclusion relies on each distro's "explicit/manual" concept and is not 100% perfect.
+- Base package exclusion heuristics are improved but not perfect for every edge case.
+- Snap/Flatpak support installs from default remotes (flathub for flatpak).
+
+## Examples and tests
+
+See the `examples/` directory for sample `.grab` files (including cross-distro).
+
+Run `./tests/test_basic.sh` for basic smoke tests (syntax, parsing, feature presence).
 
 ## License
 
