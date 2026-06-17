@@ -1,0 +1,12 @@
+# grabbit
+*.grab
+*.grb
+grabbit-*.tar
+test-*.grab
+
+# editor / os
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
