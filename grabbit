@@ -381,6 +381,15 @@ filter_base_packages() {
       ;;
   esac
 
+  # Load user overrides ~/.config/grabbit/base-excludes.<family>
+  local user_excludes="$HOME/.config/grabbit/base-excludes.${FAMILY:-unknown}"
+  if [[ -f "$user_excludes" ]]; then
+    while IFS= read -r b || [[ -n "$b" ]]; do
+      [[ -z "$b" || "$b" == \#* ]] && continue
+      base_list+=("$b")
+    done < "$user_excludes"
+  fi
+
   for entry in "${input_pkgs[@]}"; do
     pkg="${entry%%:*}"
     src="${entry#*:}"
@@ -514,13 +523,24 @@ get_install_command() {
 
   # Current distro info already in FAMILY / PM / INSTALL_CMD globals
 
+  # Simple name mappings for common cross-distro cases (extend as needed)
+  declare -A PKG_MAP
+  PKG_MAP["build-essential"]="base-devel"
+  PKG_MAP["base-devel"]="build-essential"
+  PKG_MAP["python3-dev"]="python"
+  # etc. Use original if no map or reverse lookup
+  local mapped_pkg="$pkg"
+  if [[ -n "${PKG_MAP[$pkg]:-}" && "$FAMILY" != "$orig_family" ]]; then
+    mapped_pkg="${PKG_MAP[$pkg]}"
+  fi
+
   case "$src" in
     apt)
       if [[ "$FAMILY" == "debian" ]]; then
-        echo "sudo apt update && sudo apt install -y $pkg"
+        echo "sudo apt update && sudo apt install -y $mapped_pkg"
       else
         # transpose
-        echo "${INSTALL_CMD} $pkg"
+        echo "${INSTALL_CMD} $mapped_pkg"
       fi
       ;;
     pacman|dnf|zypper|apk)
