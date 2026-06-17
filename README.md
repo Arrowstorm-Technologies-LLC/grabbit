@@ -61,40 +61,64 @@ chmod +x ~/.local/bin/grabbit
 
 Make sure `~/.local/bin` is in your PATH.
 
-### GUI Launcher & Desktop Integration
+### GUI Variant
 
-To run the GUI from command line:
+A graphical interface (`grabbit_gui.py`) is available for manual auditing of grab files. It provides the same core save/load functionality as the CLI but replaces the `-x` flag with interactive controls:
 
-```sh
-# After cloning or downloading the repo
-./grabbit-gui                # or
-./grabbit-gui my-setup.grab
-```
+- Scan your current system for packages (equivalent to `grabbit save`)
+- Open an existing `.grab` file for review
+- Use the search box + per-source checkboxes (apt, pacman, aur, brew, snap, flatpak, etc.) to filter the list
+- Manually toggle selection on individual packages by clicking the checkbox column
+- Bulk actions: "Select All Visible", "Deselect All Visible", "Invert"
+- Save the audited/selected packages back to a grab file
+- Preview the exact (transposed) install commands that would run
+- Execute the load for the audited selection (with confirmation)
 
-To make `grabbit-gui` available globally:
+The GUI uses only Python's standard library (`tkinter`). Install Tk if needed:
 
-```sh
-mkdir -p ~/.local/bin
-cp grabbit-gui ~/.local/bin/
-cp grabbit_gui.py ~/.local/bin/
-chmod +x ~/.local/bin/grabbit-gui
-```
+- Debian/Ubuntu: `sudo apt install python3-tk`
+- Arch: `sudo pacman -S tk`
+- Fedora: `sudo dnf install python3-tkinter`
 
-For desktop/start menu integration, copy the .desktop file:
+#### Drag & Drop, Save/Save As, and Directory Memory
 
-```sh
-mkdir -p ~/.local/share/applications
-cp grabbit-gui.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications/
-```
+- **Drag and drop**: Drop a `.grab` file onto the window (or the drop zone label) to open it immediately. Full support requires `pip install tkinterdnd2` (falls back to click-to-open if unavailable).
+- **Save vs Save As**: Use "Save" to overwrite the currently loaded grab file, or "Save As..." to choose a new name/location via the native file dialog.
+- **Last directory memory**: Open and Save dialogs remember the last directory you used (persisted in `~/.config/grabbit/last_dir.txt`).
 
-You can then search for "grabbit-gui" in your application launcher.
+#### GUI Launcher & Desktop Integration
 
-The GUI also supports:
-- Drag & drop of `.grab` files (best with `pip install tkinterdnd2`)
-- "Save" (to current file) and "Save As..."
-- Remembers the last used directory for open/save dialogs
-- Command line: `grabbit-gui somefile.grab` or `grabbit-gui --scan`
+The GUI can be launched in two ways:
+
+1. As a command:
+   ```sh
+   # From the repo directory
+   ./grabbit-gui
+   ./grabbit-gui my-setup.grab
+   ./grabbit-gui --scan
+   ```
+
+   To make `grabbit-gui` available globally (recommended):
+   ```sh
+   mkdir -p ~/.local/bin
+   cp grabbit-gui ~/.local/bin/
+   cp grabbit_gui.py ~/.local/bin/
+   chmod +x ~/.local/bin/grabbit-gui
+   export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
+   ```
+
+2. From your distro's application menu / start menu:
+   - Copy the desktop file:
+     ```sh
+     mkdir -p ~/.local/share/applications
+     cp grabbit-gui.desktop ~/.local/share/applications/
+     update-desktop-database ~/.local/share/applications/
+     ```
+   - Search for "grabbit-gui". The entry supports opening `.grab` files directly from file managers and includes a quick "Scan Current System" action.
+
+The launcher script (`grabbit-gui`) is a small bash wrapper that locates and runs `grabbit_gui.py`, so you get a clean single-command experience without typing `python3`.
+
+The GUI also fully supports command-line file arguments for direct opening from terminals or scripts.
 
 ## Usage
 
