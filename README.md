@@ -59,7 +59,17 @@ curl -Lo ~/.local/bin/grabbit https://raw.githubusercontent.com/Arrowstorm-Techn
 chmod +x ~/.local/bin/grabbit
 ```
 
-Make sure `~/.local/bin` is in your PATH.
+Make sure `~/.local/bin` is in your PATH:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
+```
+
+Or install via [rack](https://github.com/Arrowstorm-Technologies-LLC/rack):
+
+```sh
+rack grabbit Arrowstorm-Technologies-LLC/grabbit
+```
 
 ### GUI Variant
 
