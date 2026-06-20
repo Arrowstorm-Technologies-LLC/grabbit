@@ -157,7 +157,8 @@ class GrabbitGUI:
 
         style = ttk.Style(self.root)
         tree_font = tkfont.nametofont("TkDefaultFont")
-        rowheight = max(tree_font.metrics("linespace") + 8, 28)
+        # Extra height for Unicode checkbox glyphs (☑/☐) on Linux themes
+        rowheight = max(tree_font.metrics("linespace") + 10, 30)
         style.configure("Grabbit.Treeview", rowheight=rowheight)
         style.configure("Grabbit.Treeview.Heading", font=tree_font)
 
@@ -170,13 +171,14 @@ class GrabbitGUI:
             style="Grabbit.Treeview",
         )
 
-        self.tree.heading("selected", text="Sel", anchor=tk.CENTER)
+        self.tree.heading("selected", text="Select", anchor=tk.CENTER)
         self.tree.heading("name", text="Package Name")
         self.tree.heading("source", text="Source")
 
-        self.tree.column("selected", width=44, anchor=tk.CENTER, stretch=False)
-        self.tree.column("name", width=400, stretch=True)
-        self.tree.column("source", width=120, stretch=False)
+        # stretch=False lets Select/Source resize independently; name absorbs extra width
+        self.tree.column("selected", width=72, minwidth=56, anchor=tk.CENTER, stretch=False)
+        self.tree.column("name", width=400, minwidth=160, stretch=True)
+        self.tree.column("source", width=140, minwidth=80, stretch=False)
 
         vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(list_frame, orient="horizontal", command=self.tree.xview)
@@ -187,7 +189,6 @@ class GrabbitGUI:
         hsb.grid(row=1, column=0, sticky="ew")
 
         self.tree.bind("<Button-1>", self.on_tree_click)
-        self.tree.bind("<Configure>", self._resize_tree_columns)
 
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
@@ -556,16 +557,6 @@ class GrabbitGUI:
     def apply_filters(self):
         self.refresh_tree()
 
-    def _resize_tree_columns(self, event=None):
-        """Keep the name column using remaining width as the window grows."""
-        width = self.tree.winfo_width()
-        if width <= 1:
-            return
-        sel_w = 44
-        src_w = 120
-        name_w = max(width - sel_w - src_w - 4, 120)
-        self.tree.column("name", width=name_w)
-
     def refresh_tree(self):
         # Clear tree
         for item in self.tree.get_children():
@@ -574,7 +565,7 @@ class GrabbitGUI:
         filtered = self.get_filtered_packages()
 
         for p in filtered:
-            selected_char = "yes" if p.get("selected", True) else "no"
+            selected_char = "☑" if p.get("selected", True) else "☐"
             self.tree.insert("", "end", values=(
                 selected_char,
                 p["name"],
@@ -582,7 +573,6 @@ class GrabbitGUI:
             ), tags=(p["name"], p["src"]))
 
         self.status_var.set(f"Showing {len(filtered)} / {len(self.packages)} packages")
-        self.root.after_idle(self._resize_tree_columns)
 
     def on_tree_click(self, event):
         # Find which column and row
