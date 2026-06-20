@@ -36,6 +36,7 @@ usage() {
   echo -e "${BOLD}Usage:${RESET}"
   echo -e "  grabbit ${CYAN}save${RESET} <file>                    Save user-added packages (excludes distro base)"
   echo -e "  grabbit ${CYAN}-sp save${RESET} <file>                Save including distro/system packages"
+  echo -e "  grabbit ${CYAN}-de save${RESET} <file>                Save including desktop environment packages"
   echo -e "  grabbit ${CYAN}-x save${RESET} <file>                 Extended save (or filter with types)"
   echo -e "  grabbit ${CYAN}load${RESET} <file>                    Install packages from a grabbit file"
   echo -e "  grabbit ${CYAN}-x load${RESET} <file>                 Load while skipping specified types"
@@ -277,6 +278,11 @@ collect_packages() {
   # Exclude distro base/system packages unless -sp (include system packages)
   if [[ "${INCLUDE_SYSTEM_PACKAGES:-false}" != true ]]; then
     mapfile -t final < <(filter_base_packages "${final[@]}")
+  fi
+
+  # Exclude desktop environment packages unless -de (include DE packages)
+  if [[ "${INCLUDE_DE_PACKAGES:-false}" != true ]]; then
+    mapfile -t final < <(filter_de_packages "${final[@]}")
   fi
 
   printf '%s\n' "${final[@]}"
@@ -575,6 +581,158 @@ filter_base_packages() {
   printf '%s\n' "${output[@]}"
 }
 
+# ── desktop environment package exclusion ─────────────────────────────────────
+declare -gA DE_PACKAGE_MAP=()
+
+_build_de_package_list() {
+  local -a de_list=()
+  local grp pkg
+
+  case "$FAMILY" in
+    arch)
+      if command -v pacman >/dev/null 2>&1; then
+        for grp in plasma kde kde-plasma gnome xfce4 lxqt mate cinnamon deepin xorg budgie budgie-desktop sway hyprland; do
+          while IFS= read -r pkg; do
+            [[ -n "$pkg" ]] && de_list+=("$pkg")
+          done < <(pacman -Qg "$grp" 2>/dev/null | awk '{print $2}' || true)
+        done
+      fi
+      ;;
+    debian)
+      if command -v apt-cache >/dev/null 2>&1; then
+        while IFS= read -r pkg; do
+          [[ -n "$pkg" ]] && de_list+=("$pkg")
+        done < <(apt-cache search --names-only '^task-.*-desktop$' 2>/dev/null | awk '{print $1}' || true)
+      fi
+      ;;
+    fedora)
+      if command -v dnf >/dev/null 2>&1; then
+        while IFS= read -r pkg; do
+          [[ -n "$pkg" ]] && de_list+=("$pkg")
+        done < <(dnf group list --installed --hidden 2>/dev/null | awk '/^@/{print $1}' | tr -d '@' || true)
+      fi
+      ;;
+  esac
+
+  local user_de="$HOME/.config/grabbit/de-packages.${FAMILY:-unknown}"
+  if [[ -f "$user_de" ]]; then
+    while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+      [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+      de_list+=("$pkg")
+    done < "$user_de"
+  fi
+
+  if [[ ${#de_list[@]} -gt 0 ]]; then
+    printf '%s\n' "${de_list[@]}" | sort -u
+  fi
+}
+
+_load_de_packages() {
+  [[ ${#DE_PACKAGE_MAP[@]} -gt 0 ]] && return 0
+  local pkg
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] && DE_PACKAGE_MAP[$pkg]=1
+  done < <(_build_de_package_list)
+}
+
+_package_is_desktop_environment() {
+  local pkg="$1"
+
+  _load_de_packages
+  [[ -n "${DE_PACKAGE_MAP[$pkg]:-}" ]] && return 0
+
+  case "$pkg" in
+    sddm|sddm-*|lightdm|lightdm-*|gdm|gdm-*|ly|greetd|greetd-*|xdm|xdm-*|wdm|wdm-*|lxdm|lxdm-*|slim|slim-*)
+      return 0
+      ;;
+    kwin|kwin-*|mutter|mutter-*|xfwm4|xfwm4-*|marco|marco-*|muffin|muffin-*|\
+    openbox|openbox-*|budgie-wm|budgie-wm-*|labwc|labwc-*|sway|sway-*|\
+    hyprland|hyprland-*|wlroots|wlroots-*|weston|weston-*)
+      return 0
+      ;;
+    xorg-server|xorg-server-*|xorg-xinit|xorg-xrandr|xorg-xsetroot|xorg-xprop|\
+    xorg-xdpyinfo|xorg-xmessage|xorg-xkill|xorg-xev|xorg-iceauth|xorg-xauth|\
+    xorg-xmodmap|xorg-xrdb|xorg-setxkbmap|xwayland|xwayland-*)
+      return 0
+      ;;
+  esac
+
+  case "$FAMILY" in
+    arch)
+      case "$pkg" in
+        plasma-*|kde-*|kdeplasma-*|kactivities-*|frameworkintegration|\
+        powerdevil|systemsettings|dolphin|konsole|kate|spectacle|\
+        gnome-*|gnome-shell|gnome-session|gnome-terminal|gnome-control-center|gnome-settings-daemon|\
+        nautilus|evolution-data-server|\
+        xfce4-*|xfce-*|xfdesktop|thunar|\
+        lxqt-*|lxde-*|pcmanfm-qt|pcmanfm|\
+        mate-*|caja|\
+        cinnamon-*|nemo|\
+        deepin-*|dde-*|budgie-*|budgie-desktop|\
+        xorg-*|qt5-wayland|qt6-wayland|layer-shell-qt|kwayland|kwayland-*|plasma-wayland-protocols)
+          return 0
+          ;;
+      esac
+      ;;
+    debian)
+      case "$pkg" in
+        plasma-*|kde-*|gnome-*|gnome-shell|xfce4-*|xfce-*|lxqt-*|lxde-*|mate-*|\
+        cinnamon-*|deepin-*|budgie-*|xserver-xorg-*|xorg|xwayland|\
+        ubuntu-desktop|kubuntu-desktop|xubuntu-desktop|lubuntu-desktop|task-*-desktop)
+          return 0
+          ;;
+      esac
+      ;;
+    fedora)
+      case "$pkg" in
+        plasma-*|kde-*|gnome-*|gnome-shell|xfce4-*|mate-*|cinnamon-*|\
+        xorg-x11-*|xwayland|budgie-*|deepin-*)
+          return 0
+          ;;
+      esac
+      ;;
+    suse)
+      case "$pkg" in
+        plasma5-*|kde-*|patterns-gnome-*|patterns-kde-*|xfce4-*|\
+        xorg-x11|xorg-x11-*|xwayland|budgie-*)
+          return 0
+          ;;
+      esac
+      ;;
+    alpine)
+      case "$pkg" in
+        plasma-*|kde-*|gnome-*|xfce4-*|xorg-server|xinit|weston)
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  return 1
+}
+
+filter_de_packages() {
+  local -a input_pkgs=("$@")
+  local -a output=()
+  local entry pkg src
+
+  for entry in "${input_pkgs[@]}"; do
+    pkg="${entry%%:*}"
+    src="${entry#*:}"
+
+    case "$src" in
+      aur|brew|snap|flatpak) output+=("$entry"); continue ;;
+    esac
+
+    if _package_is_desktop_environment "$pkg"; then
+      continue
+    fi
+    output+=("$entry")
+  done
+
+  printf '%s\n' "${output[@]}"
+}
+
 # ── ensure helper tools ───────────────────────────────────────────────────────
 ensure_helper() {
   local helper="$1"
@@ -646,10 +804,14 @@ do_save() {
 
   detect_distro
 
-  if [[ "${INCLUDE_SYSTEM_PACKAGES:-false}" == true ]]; then
-    step "Collecting installed packages (including distro/system packages)"
+  if [[ "${INCLUDE_SYSTEM_PACKAGES:-false}" == true && "${INCLUDE_DE_PACKAGES:-false}" == true ]]; then
+    step "Collecting installed packages (including system and desktop environment packages)"
+  elif [[ "${INCLUDE_SYSTEM_PACKAGES:-false}" == true ]]; then
+    step "Collecting installed packages (including distro/system packages; excluding desktop environment)"
+  elif [[ "${INCLUDE_DE_PACKAGES:-false}" == true ]]; then
+    step "Collecting user-added packages (including desktop environment; excluding distro base/system)"
   else
-    step "Collecting user-added packages (excluding distro base/system packages)"
+    step "Collecting user-added packages (excluding distro base/system and desktop environment packages)"
   fi
 
   local -a collected
@@ -1010,6 +1172,7 @@ do_global_install() {
 main() {
   EXCLUDES=""
   INCLUDE_SYSTEM_PACKAGES=false
+  INCLUDE_DE_PACKAGES=false
 
   if [[ "${1:-}" == "install" ]]; then
     shift
@@ -1023,6 +1186,10 @@ main() {
     case "$1" in
       -sp)
         INCLUDE_SYSTEM_PACKAGES=true
+        shift
+        ;;
+      -de)
+        INCLUDE_DE_PACKAGES=true
         shift
         ;;
       -x)

@@ -159,6 +159,14 @@ class GrabbitGUI:
             command=self._on_system_packages_toggle,
         ).pack(side=tk.LEFT, padx=10)
 
+        self.include_de_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            btn_frame,
+            text="Desktop Environment Packages",
+            variable=self.include_de_var,
+            command=self._on_de_packages_toggle,
+        ).pack(side=tk.LEFT, padx=10)
+
         # Package list - Treeview
         list_frame = ttk.Frame(main_frame)
         list_frame.pack(fill=tk.BOTH, expand=True)
@@ -590,11 +598,151 @@ class GrabbitGUI:
                 filtered.append(pkg)
         return filtered
 
+    def _build_de_package_list(self):
+        de_list = []
+        family = self.current_family
+        pm = self.current_pm
+
+        if family == "arch" and self._command_exists("pacman"):
+            for grp in (
+                "plasma", "kde", "kde-plasma", "gnome", "xfce4", "lxqt", "mate",
+                "cinnamon", "deepin", "xorg", "budgie", "budgie-desktop", "sway", "hyprland",
+            ):
+                try:
+                    out = subprocess.check_output(
+                        ["pacman", "-Qg", grp], text=True, stderr=subprocess.DEVNULL
+                    )
+                    for line in out.strip().splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            de_list.append(parts[1])
+                except subprocess.CalledProcessError:
+                    pass
+        elif family == "debian" and self._command_exists("apt-cache"):
+            try:
+                out = subprocess.check_output(
+                    ["apt-cache", "search", "--names-only", r"^task-.*-desktop$"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+                for line in out.strip().splitlines():
+                    pkg = line.split()[0] if line.strip() else ""
+                    if pkg:
+                        de_list.append(pkg)
+            except subprocess.CalledProcessError:
+                pass
+        elif family == "fedora" and self._command_exists("dnf"):
+            try:
+                out = subprocess.check_output(
+                    ["dnf", "group", "list", "--installed", "--hidden"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+                for line in out.strip().splitlines():
+                    if line.startswith("@"):
+                        de_list.append(line.split()[0].lstrip("@"))
+            except subprocess.CalledProcessError:
+                pass
+
+        user_de = os.path.join(self.config_dir, f"de-packages.{family}")
+        if os.path.isfile(user_de):
+            with open(user_de, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        de_list.append(line)
+
+        return sorted(set(de_list))
+
+    def _package_is_desktop_environment(self, name):
+        if name in getattr(self, "_de_package_cache", ()):
+            return True
+
+        display_managers = [
+            "sddm", "lightdm", "gdm", "ly", "greetd", "xdm", "wdm", "lxdm", "slim",
+        ]
+        for dm in display_managers:
+            if name == dm or fnmatch.fnmatch(name, f"{dm}-*"):
+                return True
+
+        wm_patterns = [
+            "kwin", "kwin-*", "mutter", "mutter-*", "xfwm4", "xfwm4-*",
+            "marco", "marco-*", "muffin", "muffin-*", "openbox", "openbox-*",
+            "budgie-wm", "budgie-wm-*", "labwc", "labwc-*", "sway", "sway-*",
+            "hyprland", "hyprland-*", "wlroots", "wlroots-*", "weston", "weston-*",
+        ]
+        for pattern in wm_patterns:
+            if fnmatch.fnmatch(name, pattern):
+                return True
+
+        x_patterns = [
+            "xorg-server", "xorg-server-*", "xorg-xinit", "xorg-xrandr", "xorg-xsetroot",
+            "xorg-xprop", "xorg-xdpyinfo", "xorg-xmessage", "xorg-xkill", "xorg-xev",
+            "xorg-iceauth", "xorg-xauth", "xorg-xmodmap", "xorg-xrdb", "xorg-setxkbmap",
+            "xwayland", "xwayland-*",
+        ]
+        for pattern in x_patterns:
+            if fnmatch.fnmatch(name, pattern):
+                return True
+
+        family = self.current_family
+        family_patterns = {
+            "arch": [
+                "plasma-*", "kde-*", "kdeplasma-*", "kactivities-*", "frameworkintegration",
+                "powerdevil", "systemsettings", "dolphin", "konsole", "kate", "spectacle",
+                "gnome-*", "gnome-shell", "gnome-session", "gnome-terminal",
+                "gnome-control-center", "gnome-settings-daemon", "nautilus", "evolution-data-server",
+                "xfce4-*", "xfce-*", "xfdesktop", "thunar", "lxqt-*", "lxde-*",
+                "pcmanfm-qt", "pcmanfm", "mate-*", "caja", "cinnamon-*", "nemo",
+                "deepin-*", "dde-*", "budgie-*", "budgie-desktop", "xorg-*",
+                "qt5-wayland", "qt6-wayland", "layer-shell-qt", "kwayland", "kwayland-*",
+                "plasma-wayland-protocols",
+            ],
+            "debian": [
+                "plasma-*", "kde-*", "gnome-*", "gnome-shell", "xfce4-*", "xfce-*",
+                "lxqt-*", "lxde-*", "mate-*", "cinnamon-*", "deepin-*", "budgie-*",
+                "xserver-xorg-*", "xorg", "xwayland", "ubuntu-desktop", "kubuntu-desktop",
+                "xubuntu-desktop", "lubuntu-desktop", "task-*-desktop",
+            ],
+            "fedora": [
+                "plasma-*", "kde-*", "gnome-*", "gnome-shell", "xfce4-*", "mate-*",
+                "cinnamon-*", "xorg-x11-*", "xwayland", "budgie-*", "deepin-*",
+            ],
+            "suse": [
+                "plasma5-*", "kde-*", "patterns-gnome-*", "patterns-kde-*", "xfce4-*",
+                "xorg-x11", "xorg-x11-*", "xwayland", "budgie-*",
+            ],
+            "alpine": [
+                "plasma-*", "kde-*", "gnome-*", "xfce4-*", "xorg-server", "xinit", "weston",
+            ],
+        }
+
+        for pattern in family_patterns.get(family, []):
+            if fnmatch.fnmatch(name, pattern):
+                return True
+        return False
+
+    def _filter_de_packages(self, packages, include_de=False):
+        if include_de:
+            return packages
+        filtered = []
+        for pkg in packages:
+            if pkg["src"] in EXTERNAL_SOURCES:
+                filtered.append(pkg)
+                continue
+            if not self._package_is_desktop_environment(pkg["name"]):
+                filtered.append(pkg)
+        return filtered
+
     def _on_system_packages_toggle(self):
         """Re-scan with or without distro/system package filtering."""
         self.scan_system()
 
-    def collect_current_packages(self, include_system=False):
+    def _on_de_packages_toggle(self):
+        """Re-scan with or without desktop environment package filtering."""
+        self.scan_system()
+
+    def collect_current_packages(self, include_system=False, include_de=False):
         """Replicate grabbit's package collection logic in Python."""
         pkgs = []
         pm = self.current_pm
@@ -685,12 +833,18 @@ class GrabbitGUI:
             if key not in seen:
                 seen.add(key)
                 unique.append({"name": name, "src": src, "selected": True})
-        return self._filter_base_packages(unique, include_system=include_system)
+        self._de_package_cache = tuple(self._build_de_package_list())
+        filtered = self._filter_base_packages(unique, include_system=include_system)
+        return self._filter_de_packages(filtered, include_de=include_de)
 
     def scan_system(self):
         """Scan current system and load into the auditor."""
         include_system = self.include_system_var.get()
-        self.packages = self.collect_current_packages(include_system=include_system)
+        include_de = self.include_de_var.get()
+        self.packages = self.collect_current_packages(
+            include_system=include_system,
+            include_de=include_de,
+        )
         if not self.packages:
             messagebox.showwarning("Scan", "No packages detected or unsupported package manager.")
             return
@@ -699,10 +853,14 @@ class GrabbitGUI:
         self.orig_distro = "current"
         self.orig_family = self.current_family
         self.orig_pm = self.current_pm
-        if include_system:
-            scope = "all packages (including system)"
+        if include_system and include_de:
+            scope = "all packages (including system and desktop environment)"
+        elif include_system:
+            scope = "packages (system included, desktop environment excluded)"
+        elif include_de:
+            scope = "user-added packages (desktop environment included, system excluded)"
         else:
-            scope = "user-added packages (system excluded)"
+            scope = "user-added packages (system and desktop environment excluded)"
         self.info_var.set(f"Scanned current system: {len(self.packages)} {scope}.")
         self.apply_filters()
         self.status_var.set(f"Loaded {len(self.packages)} packages from system scan. Audit and save desired selection.")
