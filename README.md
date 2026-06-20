@@ -23,7 +23,7 @@ grabbit -x aur load minimal.grab      # restore while ignoring AUR packages
 - On load, ensures required helpers exist (automatically installs paru and/or Homebrew when needed).
 - Transposes commands across distros: a file created with apt on Debian will use pacman on Arch (and vice versa).
 - `-x` modifier lets you exclude (or ignore on load) certain source types: `aur`, `brew`, `base`, `snap`, `flatpak`, etc.
-- `-sp` includes distro/system packages in save scans (default excludes kernel, base groups, and similar).
+- `-sp` includes distro/system packages in save scans (default excludes kernel, base groups, downstream branding such as EndeavourOS/Manjaro packages, and packages from derivative repos).
 - Pure Bash with only standard tools + whatever package manager you already have.
 - Supports zypper, apk, snap, flatpak in addition to apt/pacman/dnf/brew/aur.
 - Prefers native mainline repos during cross-distro loads when possible.

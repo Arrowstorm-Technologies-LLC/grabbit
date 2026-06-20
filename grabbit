@@ -165,6 +165,8 @@ detect_distro() {
 
 # ── package collection ────────────────────────────────────────────────────────
 collect_packages() {
+  [[ -z "${FAMILY:-}" ]] && detect_distro
+
   local -a pkgs=()
   local base_excluded=0
 
@@ -354,7 +356,104 @@ get_available_install_options() {
   printf '%s\n' "${opts[@]}"
 }
 
-# ── improved base package exclusion heuristics ────────────────────────────────
+# ── improved base / downstream distro package exclusion ───────────────────────
+_is_upstream_distro_id() {
+  case "$FAMILY:${DISTRO_ID,,}" in
+    arch:arch|debian:debian|fedora:fedora|alpine:alpine) return 0 ;;
+    suse:opensuse*|suse:suse|suse:opensuse-tumbleweed|suse:opensuse-leap) return 0 ;;
+    fedora:centos|rhel|rocky|almalinux) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_get_downstream_pacman_repos() {
+  [[ "$PM" != "pacman" || ! -f /etc/pacman.conf ]] && return 0
+  local repo
+  while IFS= read -r repo; do
+    case "$repo" in
+      options|core|extra|multilib|community|testing|core-testing|extra-testing|multilib-testing|community-testing)
+        continue
+        ;;
+      *)
+        printf '%s\n' "$repo"
+        ;;
+    esac
+  done < <(grep -E '^\[[^]]+\]' /etc/pacman.conf | tr -d '[]')
+}
+
+declare -gA DOWNSTREAM_REPO_PKG_MAP=()
+
+_load_downstream_repo_packages() {
+  [[ ${#DOWNSTREAM_REPO_PKG_MAP[@]} -gt 0 ]] && return 0
+  local repo pkg
+  while IFS= read -r repo; do
+    [[ -z "$repo" ]] && continue
+    while IFS= read -r pkg; do
+      [[ -n "$pkg" ]] && DOWNSTREAM_REPO_PKG_MAP[$pkg]=1
+    done < <(pacman -Sl "$repo" 2>/dev/null | awk '{print $2}')
+  done < <(_get_downstream_pacman_repos)
+}
+
+_package_matches_downstream_name() {
+  local pkg="$1"
+
+  _is_upstream_distro_id && return 1
+
+  local id="${DISTRO_ID,,}"
+
+  case "$pkg" in
+    "$id"|${id}-*) return 0 ;;
+  esac
+
+  case "$id" in
+    endeavouros)
+      case "$pkg" in eos-*|endeavouros-*) return 0 ;; esac ;;
+    manjaro)
+      case "$pkg" in manjaro-*|mhwd-*) return 0 ;; esac ;;
+    garuda)
+      case "$pkg" in garuda-*) return 0 ;; esac ;;
+    artix)
+      case "$pkg" in artix-*) return 0 ;; esac ;;
+    ubuntu)
+      case "$pkg" in ubuntu-*|linux-image-*-generic|linux-headers-*-generic|linux-modules-*-generic) return 0 ;; esac ;;
+    linuxmint)
+      case "$pkg" in mint-*|linuxmint-*|mintmeta-*) return 0 ;; esac ;;
+    pop|pop-os)
+      case "$pkg" in pop-*|pop-desktop|linux-image-*-generic|linux-headers-*-generic) return 0 ;; esac ;;
+    elementary)
+      case "$pkg" in elementary-*|pantheon-*) return 0 ;; esac ;;
+    kali)
+      case "$pkg" in kali-*|kali-defaults) return 0 ;; esac ;;
+    rocky)
+      case "$pkg" in rocky-*|rocky-release|rocky-repos) return 0 ;; esac ;;
+    almalinux)
+      case "$pkg" in almalinux-*|almalinux-release) return 0 ;; esac ;;
+    centos)
+      case "$pkg" in centos-*|centos-release) return 0 ;; esac ;;
+    neon)
+      case "$pkg" in neon-*|kde-neon-*) return 0 ;; esac ;;
+    zorin)
+      case "$pkg" in zorin-*|zorinos-*) return 0 ;; esac ;;
+  esac
+
+  return 1
+}
+
+_package_is_downstream_distro() {
+  local pkg="$1"
+
+  if _package_matches_downstream_name "$pkg"; then
+    return 0
+  fi
+
+  if [[ "$PM" == "pacman" ]]; then
+    _load_downstream_repo_packages
+    [[ -n "${DOWNSTREAM_REPO_PKG_MAP[$pkg]:-}" ]] && return 0
+  fi
+
+  return 1
+}
+
 _build_base_package_list() {
   local -a base_list=()
 
@@ -447,6 +546,8 @@ _package_is_base() {
       esac
       ;;
   esac
+
+  _package_is_downstream_distro "$pkg" && return 0
 
   return 1
 }

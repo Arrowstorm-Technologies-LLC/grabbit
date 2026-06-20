@@ -219,37 +219,66 @@ class GrabbitGUI:
         # Initial empty tree
         self.refresh_tree()
 
+    def _parse_os_release(self):
+        data = {}
+        try:
+            with open("/etc/os-release", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    data[key] = value.strip().strip('"')
+        except OSError:
+            pass
+        return data
+
     def _detect_current_distro(self):
         """Detect current distro for load transposition."""
         self.current_family = "unknown"
         self.current_pm = "unknown"
+        self.current_distro_id = "unknown"
+        self.current_distro_name = "Unknown"
         self.current_install_cmd = "echo 'Unknown package manager'"
 
-        try:
-            with open("/etc/os-release") as f:
-                content = f.read().lower()
-                if any(x in content for x in ["debian", "ubuntu", "mint", "pop"]):
-                    self.current_family = "debian"
-                    self.current_pm = "apt"
-                    self.current_install_cmd = "sudo apt update && sudo apt install -y"
-                elif "arch" in content or "endeavouros" in content or "manjaro" in content:
-                    self.current_family = "arch"
-                    self.current_pm = "pacman"
-                    self.current_install_cmd = "sudo pacman -S --needed --noconfirm"
-                elif any(x in content for x in ["fedora", "centos", "rhel", "rocky"]):
-                    self.current_family = "fedora"
-                    self.current_pm = "dnf"
-                    self.current_install_cmd = "sudo dnf install -y"
-                elif "opensuse" in content or "suse" in content:
-                    self.current_family = "suse"
-                    self.current_pm = "zypper"
-                    self.current_install_cmd = "sudo zypper install -y"
-                elif "alpine" in content:
-                    self.current_family = "alpine"
-                    self.current_pm = "apk"
-                    self.current_install_cmd = "sudo apk add"
-        except Exception:
-            pass
+        os_release = self._parse_os_release()
+        distro_id = os_release.get("ID", "unknown").lower()
+        self.current_distro_id = distro_id
+        self.current_distro_name = os_release.get("NAME", "Unknown")
+
+        case_map = {
+            "debian": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "ubuntu": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "linuxmint": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "pop": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "elementary": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "kali": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "raspbian": ("debian", "apt", "sudo apt update && sudo apt install -y"),
+            "arch": ("arch", "pacman", "sudo pacman -S --needed --noconfirm"),
+            "endeavouros": ("arch", "pacman", "sudo pacman -S --needed --noconfirm"),
+            "manjaro": ("arch", "pacman", "sudo pacman -S --needed --noconfirm"),
+            "garuda": ("arch", "pacman", "sudo pacman -S --needed --noconfirm"),
+            "artix": ("arch", "pacman", "sudo pacman -S --needed --noconfirm"),
+            "fedora": ("fedora", "dnf", "sudo dnf install -y"),
+            "centos": ("fedora", "dnf", "sudo dnf install -y"),
+            "rhel": ("fedora", "dnf", "sudo dnf install -y"),
+            "rocky": ("fedora", "dnf", "sudo dnf install -y"),
+            "almalinux": ("fedora", "dnf", "sudo dnf install -y"),
+            "opensuse-tumbleweed": ("suse", "zypper", "sudo zypper install -y"),
+            "opensuse-leap": ("suse", "zypper", "sudo zypper install -y"),
+            "suse": ("suse", "zypper", "sudo zypper install -y"),
+            "alpine": ("alpine", "apk", "sudo apk add"),
+        }
+
+        if distro_id in case_map:
+            family, pm, install_cmd = case_map[distro_id]
+            self.current_family = family
+            self.current_pm = pm
+            self.current_install_cmd = install_cmd
+        elif distro_id.startswith("opensuse"):
+            self.current_family = "suse"
+            self.current_pm = "zypper"
+            self.current_install_cmd = "sudo zypper install -y"
 
         # Fallback by command presence
         if self.current_pm == "unknown":
@@ -419,6 +448,99 @@ class GrabbitGUI:
         self._base_list_cache_family = family
         return self._base_list_cache
 
+    def _is_upstream_distro_id(self):
+        distro_id = getattr(self, "current_distro_id", "unknown")
+        family = self.current_family
+        upstream = {
+            ("arch", "arch"),
+            ("debian", "debian"),
+            ("fedora", "fedora"),
+            ("alpine", "alpine"),
+            ("suse", "suse"),
+            ("suse", "opensuse-tumbleweed"),
+            ("suse", "opensuse-leap"),
+            ("fedora", "centos"),
+            ("fedora", "rhel"),
+            ("fedora", "rocky"),
+            ("fedora", "almalinux"),
+        }
+        return (family, distro_id) in upstream or distro_id.startswith("opensuse")
+
+    def _get_downstream_pacman_repos(self):
+        official = {
+            "options", "core", "extra", "multilib", "community", "testing",
+            "core-testing", "extra-testing", "multilib-testing", "community-testing",
+        }
+        repos = []
+        try:
+            with open("/etc/pacman.conf", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("[") and line.endswith("]"):
+                        repo = line[1:-1]
+                        if repo not in official:
+                            repos.append(repo)
+        except OSError:
+            pass
+        return repos
+
+    def _load_downstream_repo_packages(self):
+        cache_key = getattr(self, "current_distro_id", "unknown")
+        if getattr(self, "_downstream_repo_cache_key", None) == cache_key:
+            return self._downstream_repo_cache
+
+        packages = set()
+        for repo in self._get_downstream_pacman_repos():
+            try:
+                out = subprocess.check_output(["pacman", "-Sl", repo], text=True, stderr=subprocess.DEVNULL)
+                for line in out.strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        packages.add(parts[1])
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+
+        self._downstream_repo_cache = packages
+        self._downstream_repo_cache_key = cache_key
+        return packages
+
+    def _package_matches_downstream_name(self, name):
+        if self._is_upstream_distro_id():
+            return False
+
+        distro_id = getattr(self, "current_distro_id", "unknown")
+        if name == distro_id or name.startswith(f"{distro_id}-"):
+            return True
+
+        downstream_patterns = {
+            "endeavouros": ["eos-*", "endeavouros-*"],
+            "manjaro": ["manjaro-*", "mhwd-*"],
+            "garuda": ["garuda-*"],
+            "artix": ["artix-*"],
+            "ubuntu": ["ubuntu-*", "linux-image-*-generic", "linux-headers-*-generic", "linux-modules-*-generic"],
+            "linuxmint": ["mint-*", "linuxmint-*", "mintmeta-*"],
+            "pop": ["pop-*", "pop-desktop", "linux-image-*-generic", "linux-headers-*-generic"],
+            "elementary": ["elementary-*", "pantheon-*"],
+            "kali": ["kali-*", "kali-defaults"],
+            "rocky": ["rocky-*", "rocky-release", "rocky-repos"],
+            "almalinux": ["almalinux-*", "almalinux-release"],
+            "centos": ["centos-*", "centos-release"],
+            "neon": ["neon-*", "kde-neon-*"],
+            "zorin": ["zorin-*", "zorinos-*"],
+        }
+
+        for pattern in downstream_patterns.get(distro_id, []):
+            if fnmatch.fnmatch(name, pattern):
+                return True
+        return False
+
+    def _package_is_downstream_distro(self, name):
+        if self._package_matches_downstream_name(name):
+            return True
+        if self.current_pm == "pacman":
+            return name in self._load_downstream_repo_packages()
+        return False
+
     def _package_is_base(self, name):
         family = self.current_family
         if name in self._build_base_package_list():
@@ -454,7 +576,7 @@ class GrabbitGUI:
         for pattern in patterns.get(family, []):
             if fnmatch.fnmatch(name, pattern):
                 return True
-        return False
+        return self._package_is_downstream_distro(name)
 
     def _filter_base_packages(self, packages, include_system=False):
         if include_system:
