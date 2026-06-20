@@ -82,7 +82,7 @@ grabbit has no GitHub releases — rack detects the repo and downloads the `main
 
 A graphical interface (`grabbit_gui.py`) is available for manual auditing of grab files. It provides the same core save/load functionality as the CLI but replaces the `-x` flag with interactive controls:
 
-- Scan your current system for packages (equivalent to `grabbit save`)
+- Scan your current system for packages (equivalent to `grabbit save`; toggle **System Packages** for `grabbit -sp` behavior)
 - Open an existing `.grab` file for review
 - Use the search box + per-source checkboxes (apt, pacman, aur, brew, snap, flatpak, etc.) to filter the list
 - Manually toggle selection on individual packages by clicking the checkbox column
