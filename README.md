@@ -74,9 +74,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
 rack grabbit Arrowstorm-Technologies-LLC/grabbit
 ```
 
-rack installs the `grabbit` CLI first. On your next `grabbit` command (or `grabbit install`), grabbit automatically completes the global install — GUI files, distro packages, and desktop entry. You can also run `grabbit install` explicitly at any time to update or re-check dependencies.
-
-If rack falls back to the source archive and finds `install.sh`, it runs the full installer directly.
+grabbit has no GitHub releases — rack detects the repo and downloads the `main` branch archive, then runs `install.sh` to deploy the CLI and GUI and install distro dependencies. No published release is required when using the `owner/repo` slug.
 
 ### GUI Variant
 
