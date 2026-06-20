@@ -15,5 +15,22 @@ if [ ! -f "$GUI_SCRIPT" ]; then
     exit 1
 fi
 
-# Execute with python3, passing any arguments (for opening a file directly)
-exec python3 "$GUI_SCRIPT" "$@"
+# Prefer a Python that can import tkinter (Homebrew Python often lacks Tk)
+PYTHON=""
+for candidate in python3 /usr/bin/python3; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+        && "$candidate" -c "import tkinter" >/dev/null 2>&1; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo "Error: No Python with tkinter found. Install Tk for your distro, e.g.:" >&2
+    echo "  Arch:   sudo pacman -S tk" >&2
+    echo "  Debian: sudo apt install python3-tk" >&2
+    echo "  Fedora: sudo dnf install python3-tkinter" >&2
+    exit 1
+fi
+
+exec "$PYTHON" "$GUI_SCRIPT" "$@"

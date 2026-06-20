@@ -38,6 +38,7 @@ usage() {
   echo -e "  grabbit ${CYAN}-x save${RESET} <file>                 Extended save (or filter with types)"
   echo -e "  grabbit ${CYAN}load${RESET} <file>                    Install packages from a grabbit file"
   echo -e "  grabbit ${CYAN}-x load${RESET} <file>                 Load while skipping specified types"
+  echo -e "  grabbit ${CYAN}install${RESET} [--skip-deps]         Install/update global CLI+GUI and distro deps"
   echo ""
   echo -e "${BOLD}Filter examples:${RESET}"
   echo -e "  grabbit ${CYAN}-x aur,brew save${RESET} my.grab        # do not include AUR or Homebrew packages"
@@ -793,9 +794,62 @@ do_load() {
   fi
 }
 
+# ── global install (CLI + GUI + distro deps) ──────────────────────────────────
+GRABBIT_GITHUB_RAW="${GRABBIT_GITHUB_RAW:-https://raw.githubusercontent.com/Arrowstorm-Technologies-LLC/grabbit/main}"
+
+_grabbit_install_dir() {
+  dirname "$(readlink -f "${BASH_SOURCE[0]}")"
+}
+
+_run_global_installer() {
+  local bindir="$(_grabbit_install_dir)" installer tmp
+
+  for installer in "$bindir/install.sh" "$HOME/.local/bin/install.sh" "${bindir%/*}/install.sh"; do
+    if [[ -f "$installer" ]]; then
+      exec bash "$installer" "$@"
+    fi
+  done
+
+  tmp="$(mktemp)"
+  if ! curl -fsSL "$GRABBIT_GITHUB_RAW/install.sh" -o "$tmp"; then
+    die "Could not download install.sh from $GRABBIT_GITHUB_RAW"
+  fi
+  chmod +x "$tmp"
+  GRABBIT_SOURCE_DIR="$bindir" exec bash "$tmp" "$@"
+}
+
+_maybe_complete_global_install() {
+  local bindir="$(_grabbit_install_dir)"
+  local rack_dir="${RACK_DIR:-$HOME/.local/bin}"
+
+  case "$bindir" in
+    "$HOME/.local/bin"|"$rack_dir") ;;
+    *) return 0 ;;
+  esac
+
+  if [[ -f "$bindir/grabbit-gui" && -f "$bindir/grabbit_gui.py" ]]; then
+    return 0
+  fi
+
+  step "Completing grabbit global install (GUI + dependencies)"
+  _run_global_installer
+}
+
+do_global_install() {
+  _run_global_installer "$@"
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 main() {
   EXCLUDES=""
+
+  if [[ "${1:-}" == "install" ]]; then
+    shift
+    do_global_install "$@"
+    return
+  fi
+
+  _maybe_complete_global_install
 
   # Handle -x flag (filter or extended modifier)
   if [[ "${1:-}" == "-x" ]]; then

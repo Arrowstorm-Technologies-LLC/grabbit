@@ -46,17 +46,20 @@ In the GUI you can:
 - Preview the exact commands that would be run for the selected packages (with transposition applied)
 - Execute the load for the audited selection
 
-The GUI uses only Python's standard library (`tkinter`). On most desktop Linux distributions you may need to install the Tk package:
-
-- Debian/Ubuntu: `sudo apt install python3-tk`
-- Arch: `sudo pacman -S tk`
-- Fedora: `sudo dnf install python3-tkinter`
+The GUI uses Python's standard library (`tkinter`). The installer installs Tk automatically per distro (e.g. `python3-tk` on Debian, `tk` on Arch, `python3-tkinter` on Fedora).
 
 ## Install
 
+The installer deploys the CLI (`grabbit`), GUI launcher (`grabbit-gui`), and `grabbit_gui.py`, then checks your distro's package manager and installs anything missing (Python/Tk for the GUI, optional `tkinterdnd2` for drag-and-drop).
+
 ```sh
-curl -Lo ~/.local/bin/grabbit https://raw.githubusercontent.com/Arrowstorm-Technologies-LLC/grabbit/main/grabbit
-chmod +x ~/.local/bin/grabbit
+curl -fsSL https://raw.githubusercontent.com/Arrowstorm-Technologies-LLC/grabbit/main/install.sh | bash
+```
+
+Or from a local clone:
+
+```sh
+./install.sh
 ```
 
 Make sure `~/.local/bin` is in your PATH:
@@ -65,11 +68,15 @@ Make sure `~/.local/bin` is in your PATH:
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
 ```
 
-Or install via [rack](https://github.com/Arrowstorm-Technologies-LLC/rack):
+### Via rack
 
 ```sh
 rack grabbit Arrowstorm-Technologies-LLC/grabbit
 ```
+
+rack installs the `grabbit` CLI first. On your next `grabbit` command (or `grabbit install`), grabbit automatically completes the global install — GUI files, distro packages, and desktop entry. You can also run `grabbit install` explicitly at any time to update or re-check dependencies.
+
+If rack falls back to the source archive and finds `install.sh`, it runs the full installer directly.
 
 ### GUI Variant
 
@@ -84,11 +91,7 @@ A graphical interface (`grabbit_gui.py`) is available for manual auditing of gra
 - Preview the exact (transposed) install commands that would run
 - Execute the load for the audited selection (with confirmation)
 
-The GUI uses only Python's standard library (`tkinter`). Install Tk if needed:
-
-- Debian/Ubuntu: `sudo apt install python3-tk`
-- Arch: `sudo pacman -S tk`
-- Fedora: `sudo dnf install python3-tkinter`
+The installer handles Tk and optional drag-and-drop dependencies automatically. Manual install is only needed if you skip deps (`install.sh --skip-deps`).
 
 #### Drag & Drop, Save/Save As, and Directory Memory
 
@@ -108,14 +111,7 @@ The GUI can be launched in two ways:
    ./grabbit-gui --scan
    ```
 
-   To make `grabbit-gui` available globally (recommended):
-   ```sh
-   mkdir -p ~/.local/bin
-   cp grabbit-gui ~/.local/bin/
-   cp grabbit_gui.py ~/.local/bin/
-   chmod +x ~/.local/bin/grabbit-gui
-   export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
-   ```
+   `grabbit-gui` is installed globally alongside `grabbit` (see **Install** above). From the repo directory you can also run `./grabbit-gui` directly.
 
 2. From your distro's application menu / start menu:
    - Copy the desktop file:
