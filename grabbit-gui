@@ -17,7 +17,7 @@ fi
 
 # Prefer a Python that can import tkinter (Homebrew Python often lacks Tk)
 PYTHON=""
-for candidate in python3 /usr/bin/python3; do
+for candidate in /usr/bin/python3 python3; do
     if command -v "$candidate" >/dev/null 2>&1 \
         && "$candidate" -c "import tkinter" >/dev/null 2>&1; then
         PYTHON="$candidate"

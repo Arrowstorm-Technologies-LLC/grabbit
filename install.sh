@@ -143,13 +143,41 @@ install_missing_packages() {
 
 find_python_with_tk() {
   local candidate
-  for candidate in python3 /usr/bin/python3; do
+  # Prefer distro Python over Homebrew/other PATH shims (PEP 668 + Tk support)
+  for candidate in /usr/bin/python3 python3; do
     if command -v "$candidate" >/dev/null 2>&1 \
         && "$candidate" -c "import tkinter" >/dev/null 2>&1; then
       printf '%s' "$candidate"
       return 0
     fi
   done
+  return 1
+}
+
+pip_install_module() {
+  local python="$1" module="$2"
+  local log err
+
+  if ! "$python" -m pip --version >/dev/null 2>&1; then
+    return 1
+  fi
+
+  log="$(mktemp)"
+  if "$python" -m pip install --user "$module" >"$log" 2>&1; then
+    rm -f "$log"
+    return 0
+  fi
+
+  if grep -qi 'externally-managed-environment\|EXTERNALLY-MANAGED' "$log" 2>/dev/null; then
+    if "$python" -m pip install --user --break-system-packages "$module" >"$log" 2>&1; then
+      rm -f "$log"
+      return 0
+    fi
+  fi
+
+  err="$(tail -n 1 "$log" 2>/dev/null || true)"
+  rm -f "$log"
+  [[ -n "$err" ]] && info "pip: $err"
   return 1
 }
 
@@ -170,14 +198,6 @@ ensure_gui_dependencies() {
   fi
 
   step "Installing optional drag-and-drop support (tkinterdnd2)"
-  if "$python" -m pip --version >/dev/null 2>&1; then
-    if "$python" -m pip install --user tkinterdnd2 >/dev/null 2>&1; then
-      ok "Installed tkinterdnd2 via pip"
-      return 0
-    fi
-    warn "pip install tkinterdnd2 failed — GUI will work without drag-and-drop"
-    return 0
-  fi
 
   local pip_pkg=""
   case "$PM" in
@@ -192,10 +212,11 @@ ensure_gui_dependencies() {
     install_missing_packages "$pip_pkg"
   fi
 
-  if "$python" -m pip install --user tkinterdnd2 >/dev/null 2>&1; then
+  if pip_install_module "$python" tkinterdnd2; then
     ok "Installed tkinterdnd2 via pip"
   else
     warn "Could not install tkinterdnd2 — GUI will work without drag-and-drop"
+    info "Manual fix: ${python} -m pip install --user --break-system-packages tkinterdnd2"
   fi
 }
 
