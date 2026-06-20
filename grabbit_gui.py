@@ -21,6 +21,7 @@ For desktop menu: install grabbit-gui.desktop to ~/.local/share/applications/
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+import fnmatch
 import os
 import sys
 import subprocess
@@ -39,6 +40,7 @@ except ImportError:
 
 # Known sources from grabbit
 KNOWN_SOURCES = ["apt", "pacman", "aur", "brew", "snap", "flatpak", "zypper", "dnf", "apk"]
+EXTERNAL_SOURCES = frozenset({"aur", "brew", "snap", "flatpak"})
 
 class GrabbitGUI:
     def __init__(self, root):
@@ -148,6 +150,14 @@ class GrabbitGUI:
         ttk.Button(btn_frame, text="Deselect All Visible", command=self.deselect_all_visible).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="Invert Visible", command=self.invert_selection).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="Clear Filters", command=self.clear_filters).pack(side=tk.LEFT, padx=10)
+
+        self.include_system_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            btn_frame,
+            text="System Packages",
+            variable=self.include_system_var,
+            command=self._on_system_packages_toggle,
+        ).pack(side=tk.LEFT, padx=10)
 
         # Package list - Treeview
         list_frame = ttk.Frame(main_frame)
@@ -356,7 +366,113 @@ class GrabbitGUI:
         self.apply_filters()
         self.status_var.set("Grab file loaded. Use filters and checkboxes to audit, then save or load selected packages.")
 
-    def collect_current_packages(self):
+    def _build_base_package_list(self):
+        """Mirror grabbit CLI base/system package lists for the current family."""
+        family = self.current_family
+        if getattr(self, "_base_list_cache_family", None) == family:
+            return self._base_list_cache
+
+        base = []
+
+        if family == "debian":
+            base = [
+                "base-files", "bash", "coreutils", "debianutils", "diffutils", "findutils",
+                "grep", "gzip", "hostname", "init-system-helpers", "libc-bin", "login",
+                "mount", "ncurses-base", "passwd", "perl-base", "sed", "tar", "util-linux",
+            ]
+        elif family == "arch":
+            try:
+                out = subprocess.check_output(
+                    ["pacman", "-Qg", "base", "base-devel"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+                base.extend(line.split()[1] for line in out.strip().splitlines() if line.strip())
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
+            base.extend([
+                "linux", "linux-firmware", "linux-headers", "systemd", "systemd-sysvcompat",
+                "pacman", "glibc", "filesystem", "archlinux-keyring", "mkinitcpio", "grub",
+            ])
+        elif family == "fedora":
+            base = [
+                "bash", "coreutils", "glibc", "rpm", "systemd", "dnf", "yum",
+                "fedora-release", "kernel", "kernel-core",
+            ]
+        elif family == "suse":
+            base = [
+                "bash", "coreutils", "glibc", "systemd", "zypper", "suse-release", "kernel-default",
+            ]
+        elif family == "alpine":
+            base = ["alpine-baselayout", "busybox", "apk-tools", "linux-lts", "linux-firmware"]
+
+        config_dir = os.path.expanduser("~/.config/grabbit")
+        user_excludes = os.path.join(config_dir, f"base-excludes.{family}")
+        if os.path.isfile(user_excludes):
+            with open(user_excludes, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        base.append(line)
+
+        self._base_list_cache = list(dict.fromkeys(base))
+        self._base_list_cache_family = family
+        return self._base_list_cache
+
+    def _package_is_base(self, name):
+        family = self.current_family
+        if name in self._build_base_package_list():
+            return True
+
+        patterns = {
+            "arch": [
+                "linux", "linux-*", "linux-firmware", "linux-firmware-*", "linux-headers",
+                "linux-headers-*", "systemd", "systemd-*", "mkinitcpio", "mkinitcpio-*",
+                "grub", "grub-*", "archlinux-*", "pacman", "pacman-*", "glibc", "filesystem",
+                "base", "base-*", "bash", "coreutils", "systemd-sysvcompat", "kmod", "hwdata",
+                "iana-etc", "tzdata", "licenses", "pciutils", "usbutils", "inetutils", "iputils",
+                "ca-certificates", "ca-certificates-*", "openssl", "openssl-*",
+            ],
+            "debian": [
+                "linux-*", "libc6", "systemd", "systemd-*", "dpkg", "dpkg-*", "apt", "apt-*",
+                "ubuntu-*", "debian-*", "perl-base", "ncurses-base", "base-files", "base-passwd",
+            ],
+            "fedora": [
+                "kernel", "kernel-*", "systemd", "systemd-*", "glibc", "bash", "coreutils",
+                "dnf", "dnf-*", "rpm", "rpm-*", "fedora-release", "fedora-release-*",
+            ],
+            "suse": [
+                "kernel-default", "kernel-*", "systemd", "systemd-*", "glibc", "bash",
+                "coreutils", "zypper", "zypper-*",
+            ],
+            "alpine": [
+                "linux-*", "linux-firmware", "linux-firmware-*", "busybox", "alpine-baselayout",
+                "apk-tools", "musl", "musl-*",
+            ],
+        }
+
+        for pattern in patterns.get(family, []):
+            if fnmatch.fnmatch(name, pattern):
+                return True
+        return False
+
+    def _filter_base_packages(self, packages, include_system=False):
+        if include_system:
+            return packages
+        filtered = []
+        for pkg in packages:
+            if pkg["src"] in EXTERNAL_SOURCES:
+                filtered.append(pkg)
+                continue
+            if not self._package_is_base(pkg["name"]):
+                filtered.append(pkg)
+        return filtered
+
+    def _on_system_packages_toggle(self):
+        """Re-scan with or without distro/system package filtering."""
+        self.scan_system()
+
+    def collect_current_packages(self, include_system=False):
         """Replicate grabbit's package collection logic in Python."""
         pkgs = []
         pm = self.current_pm
@@ -447,11 +563,12 @@ class GrabbitGUI:
             if key not in seen:
                 seen.add(key)
                 unique.append({"name": name, "src": src, "selected": True})
-        return unique
+        return self._filter_base_packages(unique, include_system=include_system)
 
     def scan_system(self):
         """Scan current system and load into the auditor."""
-        self.packages = self.collect_current_packages()
+        include_system = self.include_system_var.get()
+        self.packages = self.collect_current_packages(include_system=include_system)
         if not self.packages:
             messagebox.showwarning("Scan", "No packages detected or unsupported package manager.")
             return
@@ -460,7 +577,11 @@ class GrabbitGUI:
         self.orig_distro = "current"
         self.orig_family = self.current_family
         self.orig_pm = self.current_pm
-        self.info_var.set(f"Scanned current system: {len(self.packages)} packages detected.")
+        if include_system:
+            scope = "all packages (including system)"
+        else:
+            scope = "user-added packages (system excluded)"
+        self.info_var.set(f"Scanned current system: {len(self.packages)} {scope}.")
         self.apply_filters()
         self.status_var.set(f"Loaded {len(self.packages)} packages from system scan. Audit and save desired selection.")
 

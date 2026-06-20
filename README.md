@@ -5,7 +5,8 @@ grabbit is a portable Bash script that captures the packages you've actually ins
 It knows how to talk to apt, pacman, dnf, AUR (via paru), and Homebrew. When you load a grabbit file on a different distribution it automatically rewrites the install commands (e.g. `apt` → `pacman`).
 
 ```sh
-grabbit save ~/my-setup.grab          # comprehensive list of what you added
+grabbit save ~/my-setup.grab          # user-added packages (excludes distro/system base)
+grabbit -sp save full.grab            # include distro/system packages (kernel, systemd, etc.)
 grabbit -x aur,brew save minimal.grab # same but skip AUR and Homebrew
 
 # later, on another machine (even different distro)
@@ -22,6 +23,7 @@ grabbit -x aur load minimal.grab      # restore while ignoring AUR packages
 - On load, ensures required helpers exist (automatically installs paru and/or Homebrew when needed).
 - Transposes commands across distros: a file created with apt on Debian will use pacman on Arch (and vice versa).
 - `-x` modifier lets you exclude (or ignore on load) certain source types: `aur`, `brew`, `base`, `snap`, `flatpak`, etc.
+- `-sp` includes distro/system packages in save scans (default excludes kernel, base groups, and similar).
 - Pure Bash with only standard tools + whatever package manager you already have.
 - Supports zypper, apk, snap, flatpak in addition to apt/pacman/dnf/brew/aur.
 - Prefers native mainline repos during cross-distro loads when possible.
@@ -38,7 +40,7 @@ python3 grabbit_gui.py
 
 In the GUI you can:
 
-- Scan your current system (equivalent to `grabbit save`)
+- Scan your current system (equivalent to `grabbit save`; toggle **System Packages** for `grabbit -sp` behavior)
 - Open an existing `.grab` file
 - Use the search box and per-source checkboxes to filter the package list (replaces the `-x` CLI flag)
 - Toggle individual packages or use "Select All Visible", "Deselect All Visible", "Invert"

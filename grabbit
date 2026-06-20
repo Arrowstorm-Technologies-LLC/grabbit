@@ -34,7 +34,8 @@ usage() {
   echo -e "${BOLD}grabbit${RESET} — save and restore packages across any Linux distro"
   echo ""
   echo -e "${BOLD}Usage:${RESET}"
-  echo -e "  grabbit ${CYAN}save${RESET} <file>                    Save comprehensive list of installed packages"
+  echo -e "  grabbit ${CYAN}save${RESET} <file>                    Save user-added packages (excludes distro base)"
+  echo -e "  grabbit ${CYAN}-sp save${RESET} <file>                Save including distro/system packages"
   echo -e "  grabbit ${CYAN}-x save${RESET} <file>                 Extended save (or filter with types)"
   echo -e "  grabbit ${CYAN}load${RESET} <file>                    Install packages from a grabbit file"
   echo -e "  grabbit ${CYAN}-x load${RESET} <file>                 Load while skipping specified types"
@@ -271,8 +272,10 @@ collect_packages() {
     fi
   done
 
-  # Apply improved base exclusion heuristics
-  mapfile -t final < <(filter_base_packages "${final[@]}")
+  # Exclude distro base/system packages unless -sp (include system packages)
+  if [[ "${INCLUDE_SYSTEM_PACKAGES:-false}" != true ]]; then
+    mapfile -t final < <(filter_base_packages "${final[@]}")
+  fi
 
   printf '%s\n' "${final[@]}"
 }
@@ -352,9 +355,7 @@ get_available_install_options() {
 }
 
 # ── improved base package exclusion heuristics ────────────────────────────────
-filter_base_packages() {
-  local -a input_pkgs=("$@")
-  local -a output=()
+_build_base_package_list() {
   local -a base_list=()
 
   case "$FAMILY" in
@@ -362,27 +363,25 @@ filter_base_packages() {
       base_list=(base-files bash coreutils debianutils diffutils findutils grep gzip hostname init-system-helpers libc-bin login mount ncurses-base passwd perl-base sed tar util-linux)
       ;;
     arch)
-      # Use pacman groups where possible
       if command -v pacman >/dev/null 2>&1; then
         mapfile -t base_list < <(pacman -Qg base base-devel 2>/dev/null | awk '{print $2}' | sort -u || true)
       fi
-      base_list+=("linux" "linux-firmware" "systemd" "systemd-sysvcompat" "pacman" "glibc")
+      base_list+=("linux" "linux-firmware" "linux-headers" "systemd" "systemd-sysvcompat" "pacman" "glibc" "filesystem" "archlinux-keyring" "mkinitcpio" "grub")
       ;;
     fedora)
-      base_list=(bash coreutils glibc rpm systemd dnf yum fedora-release)
+      base_list=(bash coreutils glibc rpm systemd dnf yum fedora-release kernel kernel-core)
       ;;
     suse)
-      base_list=(bash coreutils glibc systemd zypper suse-release)
+      base_list=(bash coreutils glibc systemd zypper suse-release kernel-default)
       ;;
     alpine)
-      base_list=(alpine-baselayout busybox apk-tools)
+      base_list=(alpine-baselayout busybox apk-tools linux-lts linux-firmware)
       ;;
     *)
       base_list=()
       ;;
   esac
 
-  # Load user overrides ~/.config/grabbit/base-excludes.<family>
   local user_excludes="$HOME/.config/grabbit/base-excludes.${FAMILY:-unknown}"
   if [[ -f "$user_excludes" ]]; then
     while IFS= read -r b || [[ -n "$b" ]]; do
@@ -391,22 +390,85 @@ filter_base_packages() {
     done < "$user_excludes"
   fi
 
+  printf '%s\n' "${base_list[@]}"
+}
+
+_package_is_base() {
+  local pkg="$1"
+  local -a base_list=()
+  local base
+
+  mapfile -t base_list < <(_build_base_package_list)
+
+  for base in "${base_list[@]}"; do
+    [[ "$pkg" == "$base" ]] && return 0
+  done
+
+  case "$FAMILY" in
+    arch)
+      case "$pkg" in
+        linux|linux-*|linux-firmware|linux-firmware-*|linux-headers|linux-headers-*|\
+        systemd|systemd-*|mkinitcpio|mkinitcpio-*|grub|grub-*|archlinux-*|\
+        pacman|pacman-*|glibc|filesystem|base|base-*|bash|coreutils|\
+        systemd-sysvcompat|kmod|hwdata|iana-etc|tzdata|licenses|pciutils|usbutils|\
+        inetutils|iputils|ca-certificates|ca-certificates-*|openssl|openssl-*)
+          return 0
+          ;;
+      esac
+      ;;
+    debian)
+      case "$pkg" in
+        linux-*|libc6|systemd|systemd-*|dpkg|dpkg-*|apt|apt-*|ubuntu-*|debian-*|\
+        perl-base|ncurses-base|base-files|base-passwd)
+          return 0
+          ;;
+      esac
+      ;;
+    fedora)
+      case "$pkg" in
+        kernel|kernel-*|systemd|systemd-*|glibc|bash|coreutils|dnf|dnf-*|rpm|rpm-*|\
+        fedora-release|fedora-release-*)
+          return 0
+          ;;
+      esac
+      ;;
+    suse)
+      case "$pkg" in
+        kernel-default|kernel-*|systemd|systemd-*|glibc|bash|coreutils|zypper|zypper-*)
+          return 0
+          ;;
+      esac
+      ;;
+    alpine)
+      case "$pkg" in
+        linux-*|linux-firmware|linux-firmware-*|busybox|alpine-baselayout|apk-tools|musl|musl-*)
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  return 1
+}
+
+filter_base_packages() {
+  local -a input_pkgs=("$@")
+  local -a output=()
+  local entry pkg src
+
   for entry in "${input_pkgs[@]}"; do
     pkg="${entry%%:*}"
     src="${entry#*:}"
-    skip=false
-    for base in "${base_list[@]}"; do
-      if [[ "$pkg" == "$base" ]]; then
-        skip=true
-        break
-      fi
-    done
-    if ! $skip; then
-      output+=("$entry")
-    else
-      # silent base exclusion (was polluting captured list)
-      : # info "Excluding base package: $pkg" >&2
+
+    # User-added external sources are always kept
+    case "$src" in
+      aur|brew|snap|flatpak) output+=("$entry"); continue ;;
+    esac
+
+    if _package_is_base "$pkg"; then
+      continue
     fi
+    output+=("$entry")
   done
 
   printf '%s\n' "${output[@]}"
@@ -483,7 +545,11 @@ do_save() {
 
   detect_distro
 
-  step "Collecting installed packages (excluding base distro packages where possible)"
+  if [[ "${INCLUDE_SYSTEM_PACKAGES:-false}" == true ]]; then
+    step "Collecting installed packages (including distro/system packages)"
+  else
+    step "Collecting user-added packages (excluding distro base/system packages)"
+  fi
 
   local -a collected
   mapfile -t collected < <(collect_packages)
@@ -842,6 +908,7 @@ do_global_install() {
 # ── main ──────────────────────────────────────────────────────────────────────
 main() {
   EXCLUDES=""
+  INCLUDE_SYSTEM_PACKAGES=false
 
   if [[ "${1:-}" == "install" ]]; then
     shift
@@ -851,18 +918,27 @@ main() {
 
   _maybe_complete_global_install
 
-  # Handle -x flag (filter or extended modifier)
-  if [[ "${1:-}" == "-x" ]]; then
-    shift
-    # If next arg looks like a type list (no command), capture it as excludes
-    if [[ $# -gt 0 && "$1" =~ ^[a-zA-Z,]+$ && "$1" != "save" && "$1" != "load" ]]; then
-      EXCLUDES="$1"
-      shift
-    else
-      # -x used as plain extended flag (e.g. grabbit -x save)
-      :
-    fi
-  fi
+  while [[ $# -gt 0 && "$1" == -* ]]; do
+    case "$1" in
+      -sp)
+        INCLUDE_SYSTEM_PACKAGES=true
+        shift
+        ;;
+      -x)
+        shift
+        if [[ $# -gt 0 && "$1" =~ ^[a-zA-Z,]+$ && "$1" != "save" && "$1" != "load" ]]; then
+          EXCLUDES="$1"
+          shift
+        fi
+        ;;
+      -h|--help|help)
+        usage
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
 
   local cmd="${1:-}"
   local path="${2:-}"
