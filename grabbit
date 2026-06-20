@@ -187,14 +187,12 @@ collect_packages() {
       ;;
     pacman)
       # Explicitly installed
-      while IFS= read -r line; do
-        pkg=$(awk '{print $1}' <<< "$line")
+      while read -r pkg _; do
         [[ -n "$pkg" ]] && pkgs+=("$pkg:pacman")
       done < <(pacman -Qe 2>/dev/null || true)
 
       # Foreign packages (AUR and manually installed)
-      while IFS= read -r line; do
-        pkg=$(awk '{print $1}' <<< "$line")
+      while read -r pkg _; do
         [[ -n "$pkg" ]] && pkgs+=("$pkg:aur")
       done < <(pacman -Qem 2>/dev/null || true)
       ;;
@@ -246,6 +244,18 @@ collect_packages() {
     done < <(flatpak list --app --columns=application 2>/dev/null || true)
   fi
 
+  # Pre-normalize exclude tokens once (no subshells per package)
+  local -a norm_excludes=()
+  if [[ -n "${EXCLUDES:-}" ]]; then
+    local _ex
+    IFS=',' read -ra _exarr <<< "$EXCLUDES"
+    for _ex in "${_exarr[@]}"; do
+      _ex="${_ex#"${_ex%%[![:space:]]*}"}"
+      _ex="${_ex%"${_ex##*[![:space:]]}"}"
+      norm_excludes+=("${_ex,,}")
+    done
+  fi
+
   # Deduplicate and apply excludes
   local -A seen=()
   local -a final=()
@@ -254,12 +264,9 @@ collect_packages() {
     pkg="${entry%%:*}"
     src="${entry#*:}"
 
-    # Apply EXCLUDES if set (comma separated)
-    if [[ -n "${EXCLUDES:-}" ]]; then
+    if [[ ${#norm_excludes[@]} -gt 0 ]]; then
       skip=false
-      IFS=',' read -ra exarr <<< "$EXCLUDES"
-      for ex in "${exarr[@]}"; do
-        ex=$(echo "$ex" | tr '[:upper:]' '[:lower:]' | xargs)
+      for ex in "${norm_excludes[@]}"; do
         if [[ "$src" == "$ex" || "$ex" == "base" && "$src" == "apt" ]]; then
           skip=true
           break
@@ -313,6 +320,33 @@ is_available_in_native_repos() {
   esac
 }
 
+# Batch-populate AUR_AVAILABLE_MAP for a list of package names via a single RPC call.
+_aur_batch_check() {
+  local -a pkgs=("$@")
+  [[ ${#pkgs[@]} -eq 0 || "$FAMILY" != "arch" ]] && return 0
+
+  local url="https://aur.archlinux.org/rpc/v5/info?arg[]=${pkgs[0]}"
+  local i
+  for (( i=1; i<${#pkgs[@]}; i++ )); do
+    url+="&arg[]=${pkgs[$i]}"
+  done
+
+  local resp=""
+  if command -v curl >/dev/null 2>&1; then
+    resp=$(curl -s --max-time 15 "$url" 2>/dev/null || true)
+  elif command -v wget >/dev/null 2>&1; then
+    resp=$(wget -qO- --timeout=15 "$url" 2>/dev/null || true)
+  fi
+  [[ -z "$resp" ]] && return 0
+
+  local pkg
+  for pkg in "${pkgs[@]}"; do
+    if echo "$resp" | grep -q "\"Name\":\"${pkg}\""; then
+      AUR_AVAILABLE_MAP[$pkg]=1
+    fi
+  done
+}
+
 # Returns list of "source:method" available for this pkg on current system
 # source: official, aur, snap, flatpak, brew
 get_available_install_options() {
@@ -324,18 +358,9 @@ get_available_install_options() {
     opts+=("official (${PM})")
   fi
 
-  # AUR (Arch specific, use RPC to detect without helper)
-  if [[ "$FAMILY" == "arch" ]]; then
-    local aur_url="https://aur.archlinux.org/rpc/?v=5&type=info&arg[]=${pkg}"
-    local aur_resp=""
-    if command -v curl >/dev/null 2>&1; then
-      aur_resp=$(curl -s --max-time 5 "$aur_url" 2>/dev/null || true)
-    elif command -v wget >/dev/null 2>&1; then
-      aur_resp=$(wget -qO- --timeout=5 "$aur_url" 2>/dev/null || true)
-    fi
-    if echo "$aur_resp" | grep -q '"resultcount":1'; then
-      opts+=("AUR (paru)")
-    fi
+  # AUR (pre-populated by _aur_batch_check before the install loop)
+  if [[ "$FAMILY" == "arch" && -n "${AUR_AVAILABLE_MAP[$pkg]:-}" ]]; then
+    opts+=("AUR (paru)")
   fi
 
   # Snap
@@ -387,7 +412,15 @@ _get_downstream_pacman_repos() {
   done < <(grep -E '^\[[^]]+\]' /etc/pacman.conf | tr -d '[]')
 }
 
+declare -gA BASE_PACKAGE_MAP=()
+declare -gA AUR_AVAILABLE_MAP=()
 declare -gA DOWNSTREAM_REPO_PKG_MAP=()
+
+declare -gA PKG_TRANSPOSE_MAP=(
+  ["build-essential"]="base-devel"
+  ["base-devel"]="build-essential"
+  ["python3-dev"]="python"
+)
 
 _load_downstream_repo_packages() {
   [[ ${#DOWNSTREAM_REPO_PKG_MAP[@]} -gt 0 ]] && return 0
@@ -498,16 +531,19 @@ _build_base_package_list() {
   printf '%s\n' "${base_list[@]}"
 }
 
+_load_base_packages() {
+  [[ ${#BASE_PACKAGE_MAP[@]} -gt 0 ]] && return 0
+  local pkg
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] && BASE_PACKAGE_MAP[$pkg]=1
+  done < <(_build_base_package_list)
+}
+
 _package_is_base() {
   local pkg="$1"
-  local -a base_list=()
-  local base
 
-  mapfile -t base_list < <(_build_base_package_list)
-
-  for base in "${base_list[@]}"; do
-    [[ "$pkg" == "$base" ]] && return 0
-  done
+  _load_base_packages
+  [[ -n "${BASE_PACKAGE_MAP[$pkg]:-}" ]] && return 0
 
   case "$FAMILY" in
     arch)
@@ -851,17 +887,9 @@ get_install_command() {
   local src="$2"
   local orig_family="$3"
 
-  # Current distro info already in FAMILY / PM / INSTALL_CMD globals
-
-  # Simple name mappings for common cross-distro cases (extend as needed)
-  declare -A PKG_MAP
-  PKG_MAP["build-essential"]="base-devel"
-  PKG_MAP["base-devel"]="build-essential"
-  PKG_MAP["python3-dev"]="python"
-  # etc. Use original if no map or reverse lookup
   local mapped_pkg="$pkg"
-  if [[ -n "${PKG_MAP[$pkg]:-}" && "$FAMILY" != "$orig_family" ]]; then
-    mapped_pkg="${PKG_MAP[$pkg]}"
+  if [[ -n "${PKG_TRANSPOSE_MAP[$pkg]:-}" && "$FAMILY" != "$orig_family" ]]; then
+    mapped_pkg="${PKG_TRANSPOSE_MAP[$pkg]}"
   fi
 
   case "$src" in
@@ -946,17 +974,27 @@ do_load() {
 
   ok "Loaded ${#packages[@]} package entries from file"
 
+  # Pre-normalize exclude tokens once
+  local -a norm_excludes=()
+  if [[ -n "${EXCLUDES:-}" ]]; then
+    local _ex
+    IFS=',' read -ra _exarr <<< "$EXCLUDES"
+    for _ex in "${_exarr[@]}"; do
+      _ex="${_ex#"${_ex%%[![:space:]]*}"}"
+      _ex="${_ex%"${_ex##*[![:space:]]}"}"
+      norm_excludes+=("${_ex,,}")
+    done
+  fi
+
   # Apply excludes if -x was used with types
   local -a to_install=()
   for entry in "${packages[@]}"; do
     pkg="${entry%%:*}"
     src="${entry#*:}"
 
-    if [[ -n "${EXCLUDES:-}" ]]; then
+    if [[ ${#norm_excludes[@]} -gt 0 ]]; then
       skip=false
-      IFS=',' read -ra exarr <<< "$EXCLUDES"
-      for ex in "${exarr[@]}"; do
-        ex=$(echo "$ex" | tr '[:upper:]' '[:lower:]' | xargs)
+      for ex in "${norm_excludes[@]}"; do
         if [[ "$src" == "$ex" ]]; then
           skip=true
           info "Skipping (excluded by -x): $pkg ($src)"
@@ -1002,6 +1040,18 @@ do_load() {
   fi
   if $need_flatpak; then
     ensure_helper flatpak || warn "flatpak installation may have issues"
+  fi
+
+  # Batch-check AUR availability for all candidates in one HTTP request
+  if [[ "$FAMILY" == "arch" ]]; then
+    local -a _aur_candidates=()
+    for entry in "${to_install[@]}"; do
+      _aur_candidates+=("${entry%%:*}")
+    done
+    if [[ ${#_aur_candidates[@]} -gt 0 ]]; then
+      step "Pre-checking AUR availability (single batch query)"
+      _aur_batch_check "${_aur_candidates[@]}"
+    fi
   fi
 
   step "Installing packages (transposing commands as needed)"
