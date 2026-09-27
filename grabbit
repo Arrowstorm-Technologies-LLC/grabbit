@@ -40,6 +40,8 @@ usage() {
   echo -e "  grabbit ${CYAN}-x save${RESET} <file>                 Extended save (or filter with types)"
   echo -e "  grabbit ${CYAN}load${RESET} <file>                    Install packages from a grabbit file"
   echo -e "  grabbit ${CYAN}-x load${RESET} <file>                 Load while skipping specified types"
+  echo -e "  grabbit ${CYAN}pack${RESET} <file.grab.run>           Build a self-installing migration bundle"
+  echo -e "       [--no-files] [--skip-file GLOB] [--max-file-mb N]  (double-click it on the new machine)"
   echo -e "  grabbit ${CYAN}install${RESET} [--skip-deps]         Install/update global CLI+GUI and distro deps"
   echo ""
   echo -e "${BOLD}Filter examples:${RESET}"
@@ -186,10 +188,10 @@ collect_packages() {
       fi
       ;;
     pacman)
-      # Explicitly installed
+      # Explicitly installed from a sync repo (-n); foreign ones are listed as aur below
       while read -r pkg _; do
         [[ -n "$pkg" ]] && pkgs+=("$pkg:pacman")
-      done < <(pacman -Qe 2>/dev/null || true)
+      done < <(pacman -Qen 2>/dev/null || true)
 
       # Foreign packages (AUR and manually installed)
       while read -r pkg _; do
@@ -961,8 +963,12 @@ do_load() {
       break
     fi
     if $in_list && [[ "$line" == PKG* ]]; then
-      # PKG name:src
+      # PKG name:src -- names reach eval below, so anything unusual is refused
       entry=${line#PKG }
+      if [[ ! "$entry" =~ ^[A-Za-z0-9@._+/-]+:[A-Za-z0-9._-]+$ ]]; then
+        warn "Ignoring malformed entry: $entry"
+        continue
+      fi
       packages+=("$entry")
     fi
   done < "$infile"
@@ -1260,6 +1266,15 @@ main() {
 
   local cmd="${1:-}"
   local path="${2:-}"
+
+  if [[ "$cmd" == "pack" ]]; then
+    shift
+    local core
+    core="$(_grabbit_install_dir)/grabbit_core.py"
+    [[ -f "$core" ]] || die "grabbit_core.py not found next to grabbit (reinstall: grabbit install)"
+    [[ $# -gt 0 ]] || usage
+    exec python3 "$core" pack "$@"
+  fi
 
   case "$cmd" in
     save)

@@ -233,7 +233,7 @@ install_binaries() {
   step "Installing grabbit binaries to $INSTALL_DIR"
   mkdir -p "$INSTALL_DIR"
 
-  for name in grabbit grabbit-gui grabbit_gui.py install.sh; do
+  for name in grabbit grabbit-gui grabbit_gui.py grabbit_core.py grabbit-bundle-stub.sh install.sh; do
     fetch_or_copy "$name" "$INSTALL_DIR/$name"
     info "Installed $name"
   done

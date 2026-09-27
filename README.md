@@ -248,12 +248,61 @@ grabbit -x aur,brew save clean.grab
 grabbit load clean.grab
 ```
 
+## Migrating to a new machine (self-installing bundle)
+
+`grabbit pack` captures this machine into **one runnable file**. The new machine
+doesn't need grabbit, Python's Tk or anything else first.
+
+```
+grabbit pack ~/my-pc.grab.run                  # everything, including loose programs
+grabbit pack ~/my-pc.grab.run --no-files       # packages, services and groups only
+grabbit pack out.grab.run --skip-file '*.AppImage' --max-file-mb 200
+```
+
+(or **File → Export Migration Bundle** in the GUI)
+
+On the new machine:
+
+1. Copy the file over and mark it executable once: right-click → Properties →
+   Permissions → "Allow executing file as program" (copies via USB sticks and
+   downloads lose that bit). Or skip this and run `bash my-pc.grab.run`.
+2. Double-click it. A terminal opens, updates the system and installs Python + Tk
+   (it asks for your password there), unpacks to
+   `~/.local/share/grabbit/bundles/`, installs grabbit, and opens the GUI.
+3. In the GUI, review the three tabs and press **Install Selected**. It asks for
+   your password once and runs everything in the background with a live log
+   (saved to `~/.local/state/grabbit/`).
+
+What a bundle carries (`.grab` v2):
+
+| Tab | Contents | Restored with |
+|---|---|---|
+| Packages | explicit repo packages, AUR, Homebrew leaves, flatpak, snap, pipx, `pip --user` — each tagged *yours / desktop / system / old distro* | one `pacman -Syu` transaction, one `paru` run, `brew`, `flatpak`, `pipx`, `pip`; a failed batch is retried package by package |
+| Files | programs no package manager owns: `~/.local/bin`, `/usr/local/{bin,sbin}`, `/opt/*`, AppImages near `$HOME`, rack's registry; symlinks keep their targets | copied back to the same place (system paths through sudo); paths under the old `$HOME` land under the new one |
+| Services & groups | enabled systemd units owned by captured packages, your supplementary groups | `systemctl enable --now`, `usermod -aG` (log out to apply) |
+
+Defaults on restore: *system* packages (kernel, bootloader, base) and *old distro*
+packages start unticked, because the new install has its own. Packages the new
+machine can't get anywhere are marked *unavailable* and unticked; the
+**Will install via** column shows repo / aur / brew / ... for the rest.
+
+The password is checked with `unix_chkpwd` before sudo sees it, so a typo can't
+trip pam_faillock (sudo would retry a wrong askpass password three times, which
+locks the account for 10 minutes on Arch). It is kept in memory only and given
+to sudo through a temporary `SUDO_ASKPASS` helper in `$XDG_RUNTIME_DIR`.
+
+Tested end to end in a `cachyos/cachyos` container (fresh databases, no Tk, no
+paru): bootstrap, repo + AUR + Homebrew + pipx + pip installs, file restore
+including a root-owned path, PATH setup.
+
 ## Limitations
 
 - Package names are used as-is. If a package has a completely different name on the target distro you will need to adjust the file manually or the install will fail for that entry.
 - Some packages are not available everywhere (e.g. most AUR packages only make sense on Arch).
 - Homebrew on Linux installs to `/home/linuxbrew` by default.
-- The script will ask for sudo when needed.
+- The CLI `load` asks for sudo in the terminal; the GUI asks once in a dialog.
+- Bundles restore files and packages, not dotfiles/app settings: copy your home directory (or the parts you want) separately.
+- Services are enabled with `--now`; a service whose package you unticked is left out of the plan.
 - Base package exclusion heuristics are improved but not perfect for every edge case.
 - Snap/Flatpak support installs from default remotes (flathub for flatpak).
 

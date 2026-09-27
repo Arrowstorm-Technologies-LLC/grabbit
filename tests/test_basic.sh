@@ -76,6 +76,11 @@ grep -q '_build_de_package_list' "$GRABBIT"
 grep -q 'Desktop Environment Packages' "$SCRIPT_DIR/grabbit_gui.py"
 echo "  OK"
 
+echo "[9/9] Migration bundle core (tests/test_core.py)..."
+bash -n "$SCRIPT_DIR/grabbit-bundle-stub.sh"
+python3 "$SCRIPT_DIR/tests/test_core.py" >/dev/null 2>&1 || { python3 "$SCRIPT_DIR/tests/test_core.py"; exit 1; }
+echo "  OK"
+
 echo ""
 echo "All basic tests passed."
 echo "Cross-distro / multi-PM tests covered in examples/ and manual verification recommended."
