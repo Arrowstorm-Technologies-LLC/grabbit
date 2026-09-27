@@ -35,6 +35,9 @@ grabbit-gui                          # audit / pick / install in a window
 - **Categories:** each package is tagged *yours*, *desktop* (KDE, GNOME, X11 and
   so on), *system* (kernel, bootloader, base) or *old distro* (EndeavourOS or
   Manjaro branding and tools), so you can decide per group what comes back.
+- **Review before you pack:** a GUI scan shows everything a bundle would carry
+  (packages, loose programs, services, groups) with sizes; only what you leave
+  ticked is exported.
 - **Aware of the target machine:** before installing, grabbit checks where each
   package is available on this machine (repo, AUR, …). Packages that can't be
   had are marked and unticked instead of failing mid-run.
