@@ -64,6 +64,7 @@ class GrabbitGUI:
         self.extras = core.Manifest()
         self.header = {}
         self.bundle_dir = None
+        self.is_scan = False
         self._ui_queue = queue.Queue()
 
         # Last directory for file dialogs + persistence
@@ -175,24 +176,6 @@ class GrabbitGUI:
         ttk.Button(btn_frame, text="Invert Visible", command=self.invert_selection).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="Clear Filters", command=self.clear_filters).pack(side=tk.LEFT, padx=10)
 
-        self.include_system_var = tk.BooleanVar(value=False)
-        self.system_toggle = ttk.Checkbutton(
-            btn_frame,
-            text="System Packages",
-            variable=self.include_system_var,
-            command=self._on_system_packages_toggle,
-        )
-        self.system_toggle.pack(side=tk.LEFT, padx=10)
-
-        self.include_de_var = tk.BooleanVar(value=False)
-        self.de_toggle = ttk.Checkbutton(
-            btn_frame,
-            text="Desktop Environment Packages",
-            variable=self.include_de_var,
-            command=self._on_de_packages_toggle,
-        )
-        self.de_toggle.pack(side=tk.LEFT, padx=10)
-
         # Bottom action buttons
         bottom_frame = ttk.Frame(main_frame)
         bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
@@ -203,6 +186,7 @@ class GrabbitGUI:
         ttk.Button(bottom_frame, text="Save As...", command=self.save_as_grab_file).pack(side=tk.LEFT, padx=5)
         ttk.Button(bottom_frame, text="Preview Install Plan", command=self.preview_load).pack(side=tk.LEFT, padx=5)
         ttk.Button(bottom_frame, text="Install Selected...", command=self.load_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bottom_frame, text="Export Bundle...", command=self.export_bundle).pack(side=tk.LEFT, padx=5)
 
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
@@ -410,12 +394,16 @@ class GrabbitGUI:
             return
         self._show_manifest(manifest, path)
 
-    def _show_manifest(self, manifest, label):
+    def _show_manifest(self, manifest, label, scan=False):
+        """scan=True: this machine's own capture. Everything starts ticked (the
+        audit decides what goes into a bundle); files come from their real paths."""
+        self.is_scan = scan
+        if scan:
+            self.bundle_dir = None
+            for p in manifest.packages:
+                p.selected = True
         self.packages = [{"name": p.name, "src": p.src, "selected": p.selected,
                           "category": p.category, "via": ""} for p in manifest.packages]
-        # these re-scan THIS machine; with a file open they would throw its list away
-        for toggle in (self.system_toggle, self.de_toggle):
-            toggle.state(["disabled"])
         self.extras = manifest
         self.header = manifest.header
         self.current_file = label
@@ -423,6 +411,11 @@ class GrabbitGUI:
         self.orig_family = manifest.header.get("ORIG_FAMILY", "unknown")
         self.orig_pm = manifest.header.get("ORIG_PM", "unknown")
         self.file_path_var.set(label)
+        self.files_note.configure(text=(
+            "Programs on this machine that no package manager tracks. Ticked ones are embedded in the "
+            "bundle when you export it (File → Export Migration Bundle)." if scan else
+            "Programs no package manager tracks (from the bundle). Ticked ones are copied back to the "
+            "same place; system paths use your password."))
         extra = ""
         if manifest.files or manifest.services or manifest.groups:
             extra = (f" | {len(manifest.files)} files, {len(manifest.services)} services, "
@@ -470,474 +463,37 @@ class GrabbitGUI:
             pass
         self.root.after(150, self._poll_queue)
 
-    def _build_base_package_list(self):
-        """Mirror grabbit CLI base/system package lists for the current family."""
-        family = self.current_family
-        if getattr(self, "_base_list_cache_family", None) == family:
-            return self._base_list_cache
-
-        base = []
-
-        if family == "debian":
-            base = [
-                "base-files", "bash", "coreutils", "debianutils", "diffutils", "findutils",
-                "grep", "gzip", "hostname", "init-system-helpers", "libc-bin", "login",
-                "mount", "ncurses-base", "passwd", "perl-base", "sed", "tar", "util-linux",
-            ]
-        elif family == "arch":
-            try:
-                out = subprocess.check_output(
-                    ["pacman", "-Qg", "base", "base-devel"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                )
-                base.extend(line.split()[1] for line in out.strip().splitlines() if line.strip())
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                pass
-            base.extend([
-                "linux", "linux-firmware", "linux-headers", "systemd", "systemd-sysvcompat",
-                "pacman", "glibc", "filesystem", "archlinux-keyring", "mkinitcpio", "grub",
-            ])
-        elif family == "fedora":
-            base = [
-                "bash", "coreutils", "glibc", "rpm", "systemd", "dnf", "yum",
-                "fedora-release", "kernel", "kernel-core",
-            ]
-        elif family == "suse":
-            base = [
-                "bash", "coreutils", "glibc", "systemd", "zypper", "suse-release", "kernel-default",
-            ]
-        elif family == "alpine":
-            base = ["alpine-baselayout", "busybox", "apk-tools", "linux-lts", "linux-firmware"]
-
-        config_dir = os.path.expanduser("~/.config/grabbit")
-        user_excludes = os.path.join(config_dir, f"base-excludes.{family}")
-        if os.path.isfile(user_excludes):
-            with open(user_excludes, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        base.append(line)
-
-        self._base_list_cache = list(dict.fromkeys(base))
-        self._base_list_cache_family = family
-        return self._base_list_cache
-
-    def _is_upstream_distro_id(self):
-        distro_id = getattr(self, "current_distro_id", "unknown")
-        family = self.current_family
-        upstream = {
-            ("arch", "arch"),
-            ("debian", "debian"),
-            ("fedora", "fedora"),
-            ("alpine", "alpine"),
-            ("suse", "suse"),
-            ("suse", "opensuse-tumbleweed"),
-            ("suse", "opensuse-leap"),
-            ("fedora", "centos"),
-            ("fedora", "rhel"),
-            ("fedora", "rocky"),
-            ("fedora", "almalinux"),
-        }
-        return (family, distro_id) in upstream or distro_id.startswith("opensuse")
-
-    def _get_downstream_pacman_repos(self):
-        official = {
-            "options", "core", "extra", "multilib", "community", "testing",
-            "core-testing", "extra-testing", "multilib-testing", "community-testing",
-        }
-        repos = []
-        try:
-            with open("/etc/pacman.conf", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("[") and line.endswith("]"):
-                        repo = line[1:-1]
-                        if repo not in official:
-                            repos.append(repo)
-        except OSError:
-            pass
-        return repos
-
-    def _load_downstream_repo_packages(self):
-        cache_key = getattr(self, "current_distro_id", "unknown")
-        if getattr(self, "_downstream_repo_cache_key", None) == cache_key:
-            return self._downstream_repo_cache
-
-        packages = set()
-        for repo in self._get_downstream_pacman_repos():
-            try:
-                out = subprocess.check_output(["pacman", "-Sl", repo], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        packages.add(parts[1])
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                continue
-
-        self._downstream_repo_cache = packages
-        self._downstream_repo_cache_key = cache_key
-        return packages
-
-    def _package_matches_downstream_name(self, name):
-        if self._is_upstream_distro_id():
-            return False
-
-        distro_id = getattr(self, "current_distro_id", "unknown")
-        if name == distro_id or name.startswith(f"{distro_id}-"):
-            return True
-
-        downstream_patterns = {
-            "endeavouros": ["eos-*", "endeavouros-*"],
-            "manjaro": ["manjaro-*", "mhwd-*"],
-            "garuda": ["garuda-*"],
-            "artix": ["artix-*"],
-            "ubuntu": ["ubuntu-*", "linux-image-*-generic", "linux-headers-*-generic", "linux-modules-*-generic"],
-            "linuxmint": ["mint-*", "linuxmint-*", "mintmeta-*"],
-            "pop": ["pop-*", "pop-desktop", "linux-image-*-generic", "linux-headers-*-generic"],
-            "elementary": ["elementary-*", "pantheon-*"],
-            "kali": ["kali-*", "kali-defaults"],
-            "rocky": ["rocky-*", "rocky-release", "rocky-repos"],
-            "almalinux": ["almalinux-*", "almalinux-release"],
-            "centos": ["centos-*", "centos-release"],
-            "neon": ["neon-*", "kde-neon-*"],
-            "zorin": ["zorin-*", "zorinos-*"],
-        }
-
-        for pattern in downstream_patterns.get(distro_id, []):
-            if fnmatch.fnmatch(name, pattern):
-                return True
-        return False
-
-    def _package_is_downstream_distro(self, name):
-        if self._package_matches_downstream_name(name):
-            return True
-        if self.current_pm == "pacman":
-            return name in self._load_downstream_repo_packages()
-        return False
-
-    def _package_is_base(self, name):
-        family = self.current_family
-        if name in self._build_base_package_list():
-            return True
-
-        patterns = {
-            "arch": [
-                "linux", "linux-*", "linux-firmware", "linux-firmware-*", "linux-headers",
-                "linux-headers-*", "systemd", "systemd-*", "mkinitcpio", "mkinitcpio-*",
-                "grub", "grub-*", "archlinux-*", "pacman", "pacman-*", "glibc", "filesystem",
-                "base", "base-*", "bash", "coreutils", "systemd-sysvcompat", "kmod", "hwdata",
-                "iana-etc", "tzdata", "licenses", "pciutils", "usbutils", "inetutils", "iputils",
-                "ca-certificates", "ca-certificates-*", "openssl", "openssl-*",
-            ],
-            "debian": [
-                "linux-*", "libc6", "systemd", "systemd-*", "dpkg", "dpkg-*", "apt", "apt-*",
-                "ubuntu-*", "debian-*", "perl-base", "ncurses-base", "base-files", "base-passwd",
-            ],
-            "fedora": [
-                "kernel", "kernel-*", "systemd", "systemd-*", "glibc", "bash", "coreutils",
-                "dnf", "dnf-*", "rpm", "rpm-*", "fedora-release", "fedora-release-*",
-            ],
-            "suse": [
-                "kernel-default", "kernel-*", "systemd", "systemd-*", "glibc", "bash",
-                "coreutils", "zypper", "zypper-*",
-            ],
-            "alpine": [
-                "linux-*", "linux-firmware", "linux-firmware-*", "busybox", "alpine-baselayout",
-                "apk-tools", "musl", "musl-*",
-            ],
-        }
-
-        for pattern in patterns.get(family, []):
-            if fnmatch.fnmatch(name, pattern):
-                return True
-        return self._package_is_downstream_distro(name)
-
-    def _filter_base_packages(self, packages, include_system=False):
-        if include_system:
-            return packages
-        filtered = []
-        for pkg in packages:
-            if pkg["src"] in EXTERNAL_SOURCES:
-                filtered.append(pkg)
-                continue
-            if not self._package_is_base(pkg["name"]):
-                filtered.append(pkg)
-        return filtered
-
-    def _build_de_package_list(self):
-        de_list = []
-        family = self.current_family
-        pm = self.current_pm
-
-        if family == "arch" and self._command_exists("pacman"):
-            for grp in (
-                "plasma", "kde", "kde-plasma", "gnome", "xfce4", "lxqt", "mate",
-                "cinnamon", "deepin", "xorg", "budgie", "budgie-desktop", "sway", "hyprland",
-            ):
-                try:
-                    out = subprocess.check_output(
-                        ["pacman", "-Qg", grp], text=True, stderr=subprocess.DEVNULL
-                    )
-                    for line in out.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            de_list.append(parts[1])
-                except subprocess.CalledProcessError:
-                    pass
-        elif family == "debian" and self._command_exists("apt-cache"):
-            try:
-                out = subprocess.check_output(
-                    ["apt-cache", "search", "--names-only", r"^task-.*-desktop$"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                )
-                for line in out.strip().splitlines():
-                    pkg = line.split()[0] if line.strip() else ""
-                    if pkg:
-                        de_list.append(pkg)
-            except subprocess.CalledProcessError:
-                pass
-        elif family == "fedora" and self._command_exists("dnf"):
-            try:
-                out = subprocess.check_output(
-                    ["dnf", "group", "list", "--installed", "--hidden"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                )
-                for line in out.strip().splitlines():
-                    if line.startswith("@"):
-                        de_list.append(line.split()[0].lstrip("@"))
-            except subprocess.CalledProcessError:
-                pass
-
-        user_de = os.path.join(self.config_dir, f"de-packages.{family}")
-        if os.path.isfile(user_de):
-            with open(user_de, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        de_list.append(line)
-
-        return sorted(set(de_list))
-
-    def _package_is_desktop_environment(self, name):
-        if name in getattr(self, "_de_package_cache", ()):
-            return True
-
-        display_managers = [
-            "sddm", "lightdm", "gdm", "ly", "greetd", "xdm", "wdm", "lxdm", "slim",
-        ]
-        for dm in display_managers:
-            if name == dm or fnmatch.fnmatch(name, f"{dm}-*"):
-                return True
-
-        wm_patterns = [
-            "kwin", "kwin-*", "mutter", "mutter-*", "xfwm4", "xfwm4-*",
-            "marco", "marco-*", "muffin", "muffin-*", "openbox", "openbox-*",
-            "budgie-wm", "budgie-wm-*", "labwc", "labwc-*", "sway", "sway-*",
-            "hyprland", "hyprland-*", "wlroots", "wlroots-*", "weston", "weston-*",
-        ]
-        for pattern in wm_patterns:
-            if fnmatch.fnmatch(name, pattern):
-                return True
-
-        x_patterns = [
-            "xorg-server", "xorg-server-*", "xorg-xinit", "xorg-xrandr", "xorg-xsetroot",
-            "xorg-xprop", "xorg-xdpyinfo", "xorg-xmessage", "xorg-xkill", "xorg-xev",
-            "xorg-iceauth", "xorg-xauth", "xorg-xmodmap", "xorg-xrdb", "xorg-setxkbmap",
-            "xwayland", "xwayland-*",
-        ]
-        for pattern in x_patterns:
-            if fnmatch.fnmatch(name, pattern):
-                return True
-
-        family = self.current_family
-        family_patterns = {
-            "arch": [
-                "plasma-*", "kde-*", "kdeplasma-*", "kactivities-*", "frameworkintegration",
-                "powerdevil", "systemsettings", "dolphin", "konsole", "kate", "spectacle",
-                "gnome-*", "gnome-shell", "gnome-session", "gnome-terminal",
-                "gnome-control-center", "gnome-settings-daemon", "nautilus", "evolution-data-server",
-                "xfce4-*", "xfce-*", "xfdesktop", "thunar", "lxqt-*", "lxde-*",
-                "pcmanfm-qt", "pcmanfm", "mate-*", "caja", "cinnamon-*", "nemo",
-                "deepin-*", "dde-*", "budgie-*", "budgie-desktop", "xorg-*",
-                "qt5-wayland", "qt6-wayland", "layer-shell-qt", "kwayland", "kwayland-*",
-                "plasma-wayland-protocols",
-            ],
-            "debian": [
-                "plasma-*", "kde-*", "gnome-*", "gnome-shell", "xfce4-*", "xfce-*",
-                "lxqt-*", "lxde-*", "mate-*", "cinnamon-*", "deepin-*", "budgie-*",
-                "xserver-xorg-*", "xorg", "xwayland", "ubuntu-desktop", "kubuntu-desktop",
-                "xubuntu-desktop", "lubuntu-desktop", "task-*-desktop",
-            ],
-            "fedora": [
-                "plasma-*", "kde-*", "gnome-*", "gnome-shell", "xfce4-*", "mate-*",
-                "cinnamon-*", "xorg-x11-*", "xwayland", "budgie-*", "deepin-*",
-            ],
-            "suse": [
-                "plasma5-*", "kde-*", "patterns-gnome-*", "patterns-kde-*", "xfce4-*",
-                "xorg-x11", "xorg-x11-*", "xwayland", "budgie-*",
-            ],
-            "alpine": [
-                "plasma-*", "kde-*", "gnome-*", "xfce4-*", "xorg-server", "xinit", "weston",
-            ],
-        }
-
-        for pattern in family_patterns.get(family, []):
-            if fnmatch.fnmatch(name, pattern):
-                return True
-        return False
-
-    def _filter_de_packages(self, packages, include_de=False):
-        if include_de:
-            return packages
-        filtered = []
-        for pkg in packages:
-            if pkg["src"] in EXTERNAL_SOURCES:
-                filtered.append(pkg)
-                continue
-            if not self._package_is_desktop_environment(pkg["name"]):
-                filtered.append(pkg)
-        return filtered
-
-    def _on_system_packages_toggle(self):
-        """Re-scan with or without distro/system package filtering."""
-        self.scan_system()
-
-    def _on_de_packages_toggle(self):
-        """Re-scan with or without desktop environment package filtering."""
-        self.scan_system()
-
-    def collect_current_packages(self, include_system=False, include_de=False):
-        """Replicate grabbit's package collection logic in Python."""
-        pkgs = []
-        pm = self.current_pm
-
-        try:
-            if pm == "apt":
-                out = subprocess.check_output(["apt-mark", "showmanual"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().splitlines():
-                    if line.strip():
-                        pkgs.append((line.strip(), "apt"))
-            elif pm == "pacman":
-                # Explicit
-                out = subprocess.check_output(["pacman", "-Qe"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().splitlines():
-                    pkg = line.split()[0]
-                    pkgs.append((pkg, "pacman"))
-                # AUR/foreign
-                out = subprocess.check_output(["pacman", "-Qem"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().splitlines():
-                    pkg = line.split()[0]
-                    pkgs.append((pkg, "aur"))
-            elif pm == "dnf":
-                try:
-                    out = subprocess.check_output(["dnf", "repoquery", "--userinstalled"], text=True, stderr=subprocess.DEVNULL)
-                    for line in out.strip().splitlines():
-                        pkg = line.split("-")[0] if "-" in line else line
-                        pkgs.append((pkg, "dnf"))
-                except:
-                    pass
-            elif pm == "zypper":
-                try:
-                    out = subprocess.check_output(["zypper", "packages", "--installed-only"], text=True, stderr=subprocess.DEVNULL)
-                    for line in out.strip().splitlines():
-                        if line.startswith("i"):
-                            parts = line.split()
-                            if len(parts) > 4:
-                                pkgs.append((parts[4], "zypper"))
-                except:
-                    pass
-            elif pm == "apk":
-                try:
-                    out = subprocess.check_output(["apk", "info", "-v"], text=True, stderr=subprocess.DEVNULL)
-                    for line in out.strip().splitlines():
-                        pkg = line.split("-")[0]
-                        pkgs.append((pkg, "apk"))
-                except:
-                    pass
-        except subprocess.CalledProcessError:
-            pass
-
-        # Universal: Homebrew
-        if self._command_exists("brew"):
-            try:
-                for mode in ["--formula", "--cask"]:
-                    out = subprocess.check_output(["brew", "list", mode], text=True, stderr=subprocess.DEVNULL)
-                    for line in out.strip().splitlines():
-                        if line.strip():
-                            pkgs.append((line.strip(), "brew"))
-            except:
-                pass
-
-        # Snap
-        if self._command_exists("snap"):
-            try:
-                out = subprocess.check_output(["snap", "list"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().splitlines()[1:]:  # skip header
-                    pkg = line.split()[0]
-                    if pkg not in ("core", "snapd"):
-                        pkgs.append((pkg, "snap"))
-            except:
-                pass
-
-        # Flatpak
-        if self._command_exists("flatpak"):
-            try:
-                out = subprocess.check_output(["flatpak", "list", "--app", "--columns=application"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().splitlines():
-                    if line.strip():
-                        pkgs.append((line.strip(), "flatpak"))
-            except:
-                pass
-
-        # Dedup while preserving order
-        seen = set()
-        unique = []
-        for name, src in pkgs:
-            key = (name, src)
-            if key not in seen:
-                seen.add(key)
-                unique.append({"name": name, "src": src, "selected": True, "category": "user", "via": ""})
-        self._de_package_cache = tuple(self._build_de_package_list())
-        filtered = self._filter_base_packages(unique, include_system=include_system)
-        return self._filter_de_packages(filtered, include_de=include_de)
-
     def scan_system(self):
-        """Scan current system and load into the auditor."""
-        for toggle in (self.system_toggle, self.de_toggle):
-            toggle.state(["!disabled"])
-        include_system = self.include_system_var.get()
-        include_de = self.include_de_var.get()
-        self.packages = self.collect_current_packages(
-            include_system=include_system,
-            include_de=include_de,
-        )
-        if not self.packages:
-            messagebox.showwarning("Scan", "No packages detected or unsupported package manager.")
-            return
-        self.current_file = None
-        self.file_path_var.set("(scanned from system - not saved yet)")
-        self.orig_distro = "current"
-        self.orig_family = self.current_family
-        self.orig_pm = self.current_pm
-        if include_system and include_de:
-            scope = "all packages (including system and desktop environment)"
-        elif include_system:
-            scope = "packages (system included, desktop environment excluded)"
-        elif include_de:
-            scope = "user-added packages (desktop environment included, system excluded)"
-        else:
-            scope = "user-added packages (system and desktop environment excluded)"
-        self.info_var.set(f"Scanned current system: {len(self.packages)} {scope}.")
-        self.extras = core.Manifest()
-        self.bundle_dir = None
-        self.header = {}
-        self._refresh_extra_tabs()
-        self.apply_filters()
-        self._resolve_in_background()
-        self.status_var.set(f"Loaded {len(self.packages)} packages from system scan. Audit and save desired selection.")
+        """Capture this machine (packages with categories, loose files, services,
+        groups) in the background and show it with everything ticked, ready to
+        audit and export as a bundle."""
+        self.status_var.set("Scanning this machine (packages, loose files, services, groups)...")
+        self.info_var.set("Scanning...")
+        q = queue.Queue()
+
+        def work():
+            try:
+                q.put(("ok", core.capture(log=lambda line: q.put(("log", line)))))
+            except Exception as e:
+                q.put(("err", e))
+
+        def pump():
+            try:
+                while True:
+                    kind, val = q.get_nowait()
+                    if kind == "log":
+                        self.status_var.set(f"Scanning... {val}")
+                    elif kind == "err":
+                        messagebox.showerror("Scan", f"Scan failed:\n{val}")
+                        return
+                    else:
+                        self._show_manifest(val, "(scanned from this machine - not saved yet)", scan=True)
+                        return
+            except queue.Empty:
+                pass
+            self.root.after(150, pump)
+        threading.Thread(target=work, daemon=True).start()
+        pump()
 
     def open_grab_file(self):
         path = filedialog.askopenfilename(
@@ -1126,10 +682,10 @@ class GrabbitGUI:
     def _setup_extra_tabs(self):
         files_frame = ttk.Frame(self.notebook)
         self.notebook.add(files_frame, text="Files")
-        ttk.Label(files_frame, text="Programs no package manager tracks (from the bundle). Ticked ones are "
-                  "copied back to the same place; system paths use your password.",
-                  wraplength=900).pack(fill=tk.X, padx=5, pady=5)
-        self.files_tree = self._make_tree(files_frame, (("selected", "Select", 72), ("dest", "Restore to", 420),
+        self.files_note = ttk.Label(files_frame, text="Programs no package manager tracks. Scan this machine "
+                                    "or open a bundle to see them.", wraplength=900)
+        self.files_note.pack(fill=tk.X, padx=5, pady=5)
+        self.files_tree = self._make_tree(files_frame, (("selected", "Select", 72), ("dest", "Path", 420),
                                                          ("kind", "Kind", 60), ("size", "Size", 80),
                                                          ("target", "Link target", 300)))
         self.files_tree.bind("<Button-1>", lambda e: self._toggle_extra(e, self.files_tree))
@@ -1173,8 +729,12 @@ class GrabbitGUI:
             self.svc_tree.insert("", "end", iid=f"g:{g}", values=(
                 "☑" if m.group_selected.get(g, True) else "☐", "group", g, "", ""))
         tabs = self.notebook.tabs()
-        self.notebook.tab(tabs[1], text=f"Files ({len(m.files)})")
-        self.notebook.tab(tabs[2], text=f"Services & groups ({len(m.services) + len(m.groups)})")
+        ticked = [f for f in m.files if f.selected]
+        size = sum(f.size for f in ticked)
+        self.notebook.tab(tabs[1], text=f"Files ({len(ticked)}/{len(m.files)}"
+                                        + (f", {core.human(size)})" if size else ")"))
+        n_svc = sum(sv.selected for sv in m.services) + sum(m.group_selected.get(g, True) for g in m.groups)
+        self.notebook.tab(tabs[2], text=f"Services & groups ({n_svc}/{len(m.services) + len(m.groups)})")
 
     def _toggle_extra(self, event, tree):
         if tree.identify_region(event.x, event.y) != "cell" or tree.identify_column(event.x) != "#1":
@@ -1384,40 +944,87 @@ class GrabbitGUI:
         log.see(tk.END)
 
     # ───────────────────────────────────────────────────── export bundle ───
+    def _audited_manifest(self):
+        """What is ticked right now, as a manifest (all ticked packages, whatever
+        the filters show). Services of unticked packages are dropped."""
+        pkgs = [core.Package(p["name"], p["src"], p.get("category", "user"))
+                for p in self.packages if p.get("selected", True)]
+        names = {p.name for p in pkgs}
+        m = self.extras
+        files = [f for f in m.files if f.selected]
+        # a link without its target (or vice versa) is pointless: both or neither
+        dests = {f.dest for f in files}
+        files = [f for f in files if f.kind != "link" or f.target in dests
+                 or not any(x.dest == f.target for x in m.files)]
+        return core.Manifest(
+            dict(self.header), pkgs,
+            [sv for sv in m.services if sv.selected and sv.package in names],
+            [g for g in m.groups if m.group_selected.get(g, True)], files)
+
     def export_bundle(self):
+        """Build a .grab.run from the audited scan of this machine."""
+        if not self.is_scan:
+            if messagebox.askyesno(
+                    "Export migration bundle",
+                    "A bundle is built from a scan of THIS machine (its loose files have to come from "
+                    "here).\n\nScan now? Review the three tabs, untick what you don't want to take "
+                    "along, then choose Export again."):
+                self.scan_system()
+            return
+        m = self._audited_manifest()
+        if not (m.packages or m.files):
+            messagebox.showinfo("Export migration bundle", "Nothing is ticked.")
+            return
+        cats = {}
+        for p in m.packages:
+            cats[p.category] = cats.get(p.category, 0) + 1
+        size = sum(f.size for f in m.files)
+        left_out = (len(self.packages) - len(m.packages), len(self.extras.files) - len(m.files))
+        summary = (f"Packages: {len(m.packages)}  ("
+                   + ", ".join(f"{n} {CATEGORY_LABELS.get(g, g)}" for g, n in sorted(cats.items())) + ")\n"
+                   f"Files: {len(m.files)}  ({core.human(size)})\n"
+                   f"Services: {len(m.services)}   Groups: {', '.join(m.groups) or 'none'}\n\n"
+                   f"Left out: {left_out[0]} packages, {left_out[1]} files.\n\n"
+                   "On the new machine, system and old-distro packages still start unticked, "
+                   "so you can decide again there.")
+        if not messagebox.askokcancel("Export migration bundle", summary):
+            return
         path = filedialog.asksaveasfilename(
             title="Export migration bundle", initialdir=self.last_directory,
             initialfile=f"{platform.node() or 'machine'}-{datetime.now():%Y%m%d}.grab.run",
             defaultextension=".run", filetypes=[("grabbit bundle", "*.grab.run")])
         if not path:
             return
-        include_files = messagebox.askyesno(
-            "Export", "Also embed programs that no package manager tracks (~/.local/bin, /usr/local/bin, "
-            "/opt, AppImages)?\n\nThis can make the bundle large; you pick which ones to restore later.")
+        self.last_directory = os.path.dirname(path) or self.last_directory
+        self._save_last_directory(self.last_directory)
+
         top = tk.Toplevel(self.root)
         top.title("Exporting bundle")
         top.geometry("820x420")
+        status = tk.StringVar(value=f"Writing {os.path.basename(path)} ({core.human(size)} of files)...")
+        ttk.Label(top, textvariable=status, padding=8).pack(fill=tk.X)
         log = scrolledtext.ScrolledText(top, wrap=tk.NONE)
-        log.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        log.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         q = queue.Queue()
 
         def work():
             try:
-                m = core.capture(log=lambda l: q.put(l))
-                out = core.build_bundle(m, path, log=lambda l: q.put(l), include_files=include_files)
+                out = core.build_bundle(m, path, log=lambda l: q.put(l))
                 q.put(f"\nWrote {out} ({core.human(out.stat().st_size)})")
                 q.put("On the new machine: mark it executable (Properties → Permissions), then double-click it.")
+                q.put(("done", True))
             except Exception as e:
                 q.put(f"\nFAILED: {e}")
-            q.put(None)
+                q.put(("done", False))
 
         def pump():
             try:
                 while True:
-                    line = q.get_nowait()
-                    if line is None:
+                    item = q.get_nowait()
+                    if isinstance(item, tuple):
+                        status.set("Done." if item[1] else "Export failed — see below.")
                         return
-                    log.insert(tk.END, line + "\n")
+                    log.insert(tk.END, item + "\n")
                     log.see(tk.END)
             except queue.Empty:
                 pass

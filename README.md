@@ -11,14 +11,15 @@ It works at three levels:
   target runs a different package manager.
 - **Audit:** `grabbit-gui` lets you scan a system or open a file, filter it, tick
   exactly what you want, preview the plan and install it.
-- **Migration:** `grabbit pack` turns this whole machine into **one
-  self-installing file**. Double-click it on a fresh machine: it installs grabbit
+- **Migration:** the GUI (or `grabbit pack`) turns this whole machine into **one
+  self-installing file**, after you've reviewed exactly what goes in. Double-click it on a fresh machine: it installs grabbit
   and its dependencies, opens the GUI with your list, and restores your
   packages, loose programs, services and group memberships. You're asked for
   your password once.
 
 ```sh
-grabbit pack ~/my-pc.grab.run        # move everything to a new machine
+grabbit-gui --scan                   # review this machine, then Export Bundle
+grabbit pack ~/my-pc.grab.run        # same bundle, no review (everything)
 grabbit save ~/my-setup.grab         # just the package list
 grabbit load ~/my-setup.grab         # install a list here
 grabbit-gui                          # audit / pick / install in a window
@@ -84,7 +85,22 @@ You don't need grabbit, Python's Tk or anything else on the new machine
 beforehand.
 
 **1. On the old machine**, build the bundle close to moving day, so it matches
-what you have installed:
+what you have installed. Use the GUI, so you can see and choose what goes in:
+
+1. `grabbit-gui --scan`, or **Scan Current System**. This captures packages with
+   their categories, loose programs, services and groups, all ticked.
+2. Untick anything you don't want to take along, on any of the three tabs. The
+   tab titles count what's ticked, and the Files tab shows the total size.
+   Unticking a symlink or its target unticks both.
+3. **Export Bundle…** (also under **File**). It shows a summary (packages per
+   category, files and their size, services, groups, what's left out), then
+   asks where to save. Only ticked items go in, whatever the filters currently
+   show. A service whose package you unticked stays out too.
+
+System and old-distro packages can go in: on the new machine they start
+unticked anyway, so you get to decide again there.
+
+For scripts, or when you don't need a review, the CLI packs everything:
 
 ```sh
 grabbit pack ~/my-pc.grab.run                               # everything
@@ -93,8 +109,8 @@ grabbit pack ~/my-pc.grab.run --skip-file '*.AppImage'      # leave some loose f
 grabbit pack ~/my-pc.grab.run --max-file-mb 200             # ...or everything above a size
 ```
 
-In the GUI, use **File → Export Migration Bundle…**. `python3 grabbit_core.py info
-my-pc.grab.run` prints a summary of any bundle or `.grab` file.
+`python3 ~/.local/bin/grabbit_core.py info my-pc.grab.run` prints a summary of
+any bundle or `.grab` file.
 
 **2. Copy it to the new machine and mark it executable once.** Right-click →
 Properties → Permissions → *Allow executing file as program*. USB sticks and
@@ -155,9 +171,10 @@ grabbit-gui my-pc.grab.run     # open a bundle (unpacked first, so its files can
 grabbit-gui --scan             # start with a scan of this machine
 ```
 
-- **Scan Current System** is the equivalent of `grabbit save`. The *System
-  Packages* and *Desktop Environment Packages* toggles match `-sp` and `-de`
-  (they're greyed out while a file is open, because they re-scan).
+- **Scan Current System** captures this machine the same way `pack` does:
+  every explicitly installed package tagged with its category, loose programs,
+  services and groups, all ticked. It runs in the background (about 10
+  seconds).
 - **Filters:** name search, per-source checkboxes and per-category checkboxes.
   Select, deselect or invert everything visible, or click the checkbox column
   per package.
@@ -166,8 +183,11 @@ grabbit-gui --scan             # start with a scan of this machine
 - **Opening files:** drag and drop a `.grab` or `.grab.run` onto the window.
   This needs `tkinterdnd2`; otherwise click the drop zone. Open and save dialogs
   remember the last folder (`~/.config/grabbit/last_dir.txt`).
-- **Installing:** Preview Install Plan, Install Selected and Export Migration
-  Bundle, as described above.
+- **Export Bundle:** builds a `.grab.run` from a scan, with only what's ticked
+  (see [Migrating](#migrating-to-a-new-machine)). With a file open instead of a
+  scan, it offers to scan first, since loose files have to come from this
+  machine.
+- **Installing:** Preview Install Plan and Install Selected, as described above.
 
 The menu entry (`grabbit-gui.desktop`) is installed by `install.sh`. It opens
 `.grab` files from your file manager and has a *Scan Current System* action.
@@ -208,8 +228,8 @@ second.
 
 Dependencies aren't recorded; the package manager pulls them in again.
 `grabbit save` leaves out base/system and desktop-environment packages unless
-you pass `-sp`/`-de`. `pack` keeps everything and tags it instead, so the choice
-happens on the new machine. Per-distro lists can be extended with
+you pass `-sp`/`-de`. The GUI scan and `pack` keep everything and tag it
+instead; the GUI's category checkboxes then show or hide each group. Per-distro lists can be extended with
 `~/.config/grabbit/base-excludes.<family>` and `de-packages.<family>`.
 
 ## File format

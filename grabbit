@@ -42,6 +42,7 @@ usage() {
   echo -e "  grabbit ${CYAN}-x load${RESET} <file>                 Load while skipping specified types"
   echo -e "  grabbit ${CYAN}pack${RESET} <file.grab.run>           Build a self-installing migration bundle"
   echo -e "       [--no-files] [--skip-file GLOB] [--max-file-mb N]  (double-click it on the new machine)"
+  echo -e "       To review what goes in first: grabbit-gui --scan, then Export Bundle"
   echo -e "  grabbit ${CYAN}install${RESET} [--skip-deps]         Install/update global CLI+GUI and distro deps"
   echo ""
   echo -e "${BOLD}Filter examples:${RESET}"
