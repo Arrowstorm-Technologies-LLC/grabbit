@@ -994,20 +994,27 @@ class GrabbitGUI:
         self._write_grab_file(path)
 
     def _write_grab_file(self, path):
-        """Internal: write the current selected packages to path."""
+        """Write the selected (visible) packages as .grab v2, keeping categories,
+        services and groups. Embedded files only exist inside a bundle, so they
+        are not written to a plain .grab."""
         try:
             selected = [p for p in self.get_filtered_packages() if p.get("selected", True)]
+            header = dict(self.header) if self.header else {}
+            header.update({
+                "Created": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                "ORIG_DISTRO": header.get("ORIG_DISTRO", self.orig_distro if self.orig_distro != "current"
+                                          else self.current_distro_id),
+                "ORIG_FAMILY": self.orig_family, "ORIG_PM": self.orig_pm,
+            })
+            header.setdefault("ORIG_DISTRO_NAME", f'"{self.current_distro_name}"')
+            names = {p["name"] for p in selected}
+            m = core.Manifest(
+                header,
+                [core.Package(p["name"], p["src"], p.get("category", "user")) for p in selected],
+                [sv for sv in self.extras.services if sv.selected and sv.package in names],
+                [g for g in self.extras.groups if self.extras.group_selected.get(g, True)])
             with open(path, "w") as f:
-                f.write("# GRABBIT v1\n")
-                f.write(f"# Created: {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}\n")
-                f.write(f"# ORIG_DISTRO={self.orig_distro}\n")
-                f.write(f"# ORIG_FAMILY={self.orig_family}\n")
-                f.write(f"# ORIG_PM={self.orig_pm}\n")
-                f.write(f'# ORIG_DISTRO_NAME="{self.orig_distro}"\n\n')
-                f.write("PKG_LIST_START\n")
-                for p in selected:
-                    f.write(f"PKG {p['name']}:{p['src']}\n")
-                f.write("PKG_LIST_END\n")
+                f.write(core.dumps(m))
             self.current_file = path
             self.file_path_var.set(path)
             messagebox.showinfo("Saved", f"Saved {len(selected)} packages to {path}")

@@ -1,316 +1,333 @@
 # grabbit
 
-grabbit is a portable Bash script that captures the packages you've actually installed on a Linux system (excluding most of what the distro shipped with) and can later restore them on the *same* or a *completely different* distro.
+grabbit captures what you've installed on a Linux machine and puts it back on
+another one, on the same distro or a different one.
 
-It knows how to talk to apt, pacman, dnf, AUR (via paru), and Homebrew. When you load a grabbit file on a different distribution it automatically rewrites the install commands (e.g. `apt` → `pacman`).
+It works at three levels:
+
+- **Lists:** `grabbit save` writes a plain-text `.grab` file of your explicitly
+  installed packages and their sources (repo, AUR, Homebrew, Flatpak, Snap, pipx,
+  pip). `grabbit load` installs them again, translating the commands if the
+  target runs a different package manager.
+- **Audit:** `grabbit-gui` lets you scan a system or open a file, filter it, tick
+  exactly what you want, preview the plan and install it.
+- **Migration:** `grabbit pack` turns this whole machine into **one
+  self-installing file**. Double-click it on a fresh machine: it installs grabbit
+  and its dependencies, opens the GUI with your list, and restores your
+  packages, loose programs, services and group memberships. You're asked for
+  your password once.
 
 ```sh
-grabbit save ~/my-setup.grab          # user-added packages (excludes distro/system base and DE)
-grabbit -sp save full.grab            # include distro/system packages (kernel, systemd, etc.)
-grabbit -de save de.grab              # include desktop environment packages (KDE, GNOME, X11, etc.)
-grabbit -x aur,brew save minimal.grab # same but skip AUR and Homebrew
-
-# later, on another machine (even different distro)
-grabbit load ~/my-setup.grab
-grabbit -x aur load minimal.grab      # restore while ignoring AUR packages
+grabbit pack ~/my-pc.grab.run        # move everything to a new machine
+grabbit save ~/my-setup.grab         # just the package list
+grabbit load ~/my-setup.grab         # install a list here
+grabbit-gui                          # audit / pick / install in a window
 ```
 
 ## Features
 
-- Works on Debian/Ubuntu, Arch, Fedora and similar families.
-- Detects explicitly installed packages (using `apt-mark showmanual`, `pacman -Qe`, etc.) so you don't get the entire base system.
-- Recognises AUR packages and Homebrew formulae/casks.
-- Records the *original source* of each package.
-- On load, ensures required helpers exist (automatically installs paru and/or Homebrew when needed).
-- Transposes commands across distros: a file created with apt on Debian will use pacman on Arch (and vice versa).
-- `-x` modifier lets you exclude (or ignore on load) certain source types: `aur`, `brew`, `base`, `snap`, `flatpak`, etc.
-- `-sp` includes distro/system packages in save scans (default excludes kernel, base groups, downstream branding such as EndeavourOS/Manjaro packages, and packages from derivative repos).
-- `-de` includes desktop environment packages in save scans (default excludes KDE/Plasma, GNOME, XFCE, X11/Wayland stack, display managers, and related DE groups — these are typically reinstalled with any new distro).
-- Pure Bash with only standard tools + whatever package manager you already have.
-- Supports zypper, apk, snap, flatpak in addition to apt/pacman/dnf/brew/aur.
-- Prefers native mainline repos during cross-distro loads when possible.
-
-## GUI Variant
-
-A graphical interface is available for manual auditing of grab files:
-
-```sh
-./grabbit_gui.py
-# or
-python3 grabbit_gui.py
-```
-
-In the GUI you can:
-
-- Scan your current system (equivalent to `grabbit save`; toggle **System Packages** for `grabbit -sp` and **Desktop Environment Packages** for `grabbit -de`)
-- Open an existing `.grab` file
-- Use the search box and per-source checkboxes to filter the package list (replaces the `-x` CLI flag)
-- Toggle individual packages or use "Select All Visible", "Deselect All Visible", "Invert"
-- Save the audited selection as a new grab file
-- Preview the exact commands that would be run for the selected packages (with transposition applied)
-- Execute the load for the audited selection
-
-The GUI uses Python's standard library (`tkinter`). The installer installs Tk automatically per distro (e.g. `python3-tk` on Debian, `tk` on Arch, `python3-tkinter` on Fedora).
+- **Package managers:** apt, pacman, dnf, zypper and apk natively, plus AUR (via
+  paru), Homebrew, Flatpak, Snap, pipx and `pip --user`.
+- **Only what you installed:** `apt-mark showmanual`, `pacman -Qen`/`-Qem`, dnf
+  user-installed and so on, rather than the whole base system. Every package
+  keeps its original source.
+- **Categories:** each package is tagged *yours*, *desktop* (KDE, GNOME, X11 and
+  so on), *system* (kernel, bootloader, base) or *old distro* (EndeavourOS or
+  Manjaro branding and tools), so you can decide per group what comes back.
+- **Aware of the target machine:** before installing, grabbit checks where each
+  package is available on this machine (repo, AUR, …). Packages that can't be
+  had are marked and unticked instead of failing mid-run.
+- **Batched and resilient:** one `pacman -Syu` transaction and one `paru` run for
+  hundreds of packages. If a batch fails, it's retried package by package, so a
+  single bad name doesn't sink the rest.
+- **More than packages:** programs no package manager owns (`~/.local/bin`,
+  `/usr/local`, `/opt`, AppImages, rack's registry), enabled systemd services
+  and your group memberships.
+- **Helpers installed on demand:** paru, Homebrew, Flatpak with the Flathub
+  remote, snapd, pipx and pip are set up only when your selection needs them.
+- **Cross-distro:** a file made with apt on Debian installs with pacman on Arch,
+  and the other way round.
+- **Few dependencies:** the CLI is Bash, and the GUI and migration engine use
+  Python's standard library (Tkinter). Nothing else to install.
 
 ## Install
 
-The installer deploys the CLI (`grabbit`), GUI launcher (`grabbit-gui`), and `grabbit_gui.py`, then checks your distro's package manager and installs anything missing (Python/Tk for the GUI, optional `tkinterdnd2` for drag-and-drop).
+The installer copies `grabbit`, `grabbit-gui`, `grabbit_gui.py`, `grabbit_core.py`
+and the bundle stub into `~/.local/bin`. It also installs Python/Tk for your
+distro, adds optional `tkinterdnd2` for drag-and-drop, and creates a menu entry.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Arrowstorm-Technologies-LLC/grabbit/main/install.sh | bash
+# or, from a clone
+./install.sh                 # --skip-deps / --skip-desktop to leave those out
 ```
 
-Or from a local clone:
+Make sure `~/.local/bin` is on your PATH:
 
 ```sh
-./install.sh
-```
-
-Make sure `~/.local/bin` is in your PATH:
-
-```sh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # or ~/.zshrc
 ```
 
 ### Via rack
 
 ```sh
-rack grabbit Arrowstorm-Technologies-LLC/grabbit
+rack grabbit Arrowstorm-Technologies-LLC/grabbit     # install
+rack -u grabbit                                       # update
 ```
 
-grabbit has no GitHub releases — rack detects the repo and downloads the `main` branch archive, then runs `install.sh` to deploy the CLI and GUI and install distro dependencies. No published release is required when using the `owner/repo` slug.
+grabbit has no GitHub releases. rack downloads the `main` branch archive and runs
+`install.sh`.
 
-### GUI Variant
+## Migrating to a new machine
 
-A graphical interface (`grabbit_gui.py`) is available for manual auditing of grab files. It provides the same core save/load functionality as the CLI but replaces the `-x` flag with interactive controls:
+You don't need grabbit, Python's Tk or anything else on the new machine
+beforehand.
 
-- Scan your current system for packages (equivalent to `grabbit save`; toggle **System Packages** for `grabbit -sp` and **Desktop Environment Packages** for `grabbit -de`)
-- Open an existing `.grab` file for review
-- Use the search box + per-source checkboxes (apt, pacman, aur, brew, snap, flatpak, etc.) to filter the list
-- Manually toggle selection on individual packages by clicking the checkbox column
-- Bulk actions: "Select All Visible", "Deselect All Visible", "Invert"
-- Save the audited/selected packages back to a grab file
-- Preview the exact (transposed) install commands that would run
-- Execute the load for the audited selection (with confirmation)
-
-The installer handles Tk and optional drag-and-drop dependencies automatically. Manual install is only needed if you skip deps (`install.sh --skip-deps`).
-
-#### Drag & Drop, Save/Save As, and Directory Memory
-
-- **Drag and drop**: Drop a `.grab` file onto the window (or the drop zone label) to open it immediately. Full support requires `pip install tkinterdnd2` (falls back to click-to-open if unavailable).
-- **Save vs Save As**: Use "Save" to overwrite the currently loaded grab file, or "Save As..." to choose a new name/location via the native file dialog.
-- **Last directory memory**: Open and Save dialogs remember the last directory you used (persisted in `~/.config/grabbit/last_dir.txt`).
-
-#### GUI Launcher & Desktop Integration
-
-The GUI can be launched in two ways:
-
-1. As a command:
-   ```sh
-   # From the repo directory
-   ./grabbit-gui
-   ./grabbit-gui my-setup.grab
-   ./grabbit-gui --scan
-   ```
-
-   `grabbit-gui` is installed globally alongside `grabbit` (see **Install** above). From the repo directory you can also run `./grabbit-gui` directly.
-
-2. From your distro's application menu / start menu:
-   - Copy the desktop file:
-     ```sh
-     mkdir -p ~/.local/share/applications
-     cp grabbit-gui.desktop ~/.local/share/applications/
-     update-desktop-database ~/.local/share/applications/
-     ```
-   - Search for "grabbit-gui". The entry supports opening `.grab` files directly from file managers and includes a quick "Scan Current System" action.
-
-The launcher script (`grabbit-gui`) is a small bash wrapper that locates and runs `grabbit_gui.py`, so you get a clean single-command experience without typing `python3`.
-
-The GUI also fully supports command-line file arguments for direct opening from terminals or scripts.
-
-## Usage
-
-```
-grabbit save <file>
-grabbit -x save <file>
-grabbit load <file>
-grabbit -x load <file>
-```
-
-### Filtering with -x
-
-`-x` followed by a comma-separated list of types tells grabbit to skip those sources:
+**1. On the old machine**, build the bundle close to moving day, so it matches
+what you have installed:
 
 ```sh
-grabbit -x aur,brew save mylist.grab     # capture only native packages
-grabbit -x aur load mylist.grab          # restore everything except AUR
+grabbit pack ~/my-pc.grab.run                               # everything
+grabbit pack ~/my-pc.grab.run --no-files                    # packages, services, groups only
+grabbit pack ~/my-pc.grab.run --skip-file '*.AppImage'      # leave some loose files out (repeatable)
+grabbit pack ~/my-pc.grab.run --max-file-mb 200             # ...or everything above a size
 ```
 
-When you just write `grabbit -x save ...` (no types after `-x`) it performs a full capture (the normal behaviour).
+In the GUI, use **File → Export Migration Bundle…**. `python3 grabbit_core.py info
+my-pc.grab.run` prints a summary of any bundle or `.grab` file.
 
-### What gets saved?
+**2. Copy it to the new machine and mark it executable once.** Right-click →
+Properties → Permissions → *Allow executing file as program*. USB sticks and
+downloads drop that bit. Alternatively, skip this and run `bash my-pc.grab.run`.
 
-grabbit tries hard to record only packages *you* asked for:
+**3. Double-click it.** A terminal opens and:
 
-- Debian/Ubuntu etc. → `apt-mark showmanual`
-- Arch etc. → `pacman -Qe` + `pacman -Qem` (AUR)
-- Fedora etc. → dnf user-installed
-- openSUSE → zypper
-- Alpine → apk
-- Universal: Snap, Flatpak, Homebrew (formulae + casks)
+- runs `pacman -Syu` and installs Python + Tk (other distros just install Python +
+  Tk), asking for your password in the terminal;
+- unpacks to `~/.local/share/grabbit/bundles/<name>-<date>/`;
+- installs grabbit to `~/.local/bin`;
+- opens the GUI on the bundle. The terminal can then be closed.
 
-Improved base exclusion heuristics are applied per distro (known base groups and meta-packages are filtered).
+**4. In the GUI**, review the three tabs, then **Install Selected**:
 
-It does **not** try to capture every single dependency (those will be pulled in automatically during load).
+| Tab | What's in it | How it's restored |
+|---|---|---|
+| **Packages** | repo, AUR, Homebrew (only the formulae you asked for, not their dependencies), Flatpak, Snap, pipx, `pip --user`; with *Category* and *Will install via* columns | `pacman -Syu` (one transaction), `paru` (one run), `brew`, `flatpak`, `snap`, `pipx`, `pip` |
+| **Files** | programs no package manager owns: `~/.local/bin`, `/usr/local/{bin,sbin}`, `/opt/*`, AppImages in your home, rack's registry. Symlinks keep their targets, so e.g. `~/.local/bin/claude → ~/.local/share/claude/versions/…` comes back whole | copied to the same place; system paths through sudo. Paths under the old `$HOME` land under the new one, even with a different username. `~/.local/bin` is added to PATH for bash, zsh and fish |
+| **Services & groups** | enabled systemd units whose unit file belongs to a captured package; your supplementary groups | `systemctl enable --now`, `usermod -aG` (log out to apply) |
 
-### The proprietary file
+What starts ticked:
 
-The file created by `save` is plain text and contains:
+- **Unticked by default:** *system* packages (the old kernel, bootloader and
+  base) and *old distro* packages. The new install has its own, and putting
+  e.g. EndeavourOS's `grub`/`dracut` on a CachyOS box would do harm.
+- **Also unticked:** packages marked *unavailable*, which this machine can't get
+  from its repos or the AUR.
+- **Follows its package:** a service whose package you untick is left out too.
+- **Preview first:** **Preview Install Plan** shows every step and command
+  before anything runs.
 
-- Origin distro and package manager
-- List of packages + their source (`apt`, `aur`, `brew`, `snap`, `flatpak`, `zypper`, `apk`, etc.)
+Installing runs in the background, with a progress bar, a live log, **Cancel**
+(stops after the current step) and a summary at the end. The log is saved to
+`~/.local/state/grabbit/install-<date>.log`.
 
-You can read it with `cat`, version control it, or copy it anywhere.
+## Passwords
 
-### Sophisticated source selection on load
+- **In the terminal (bootstrap):** plain `sudo`, asking you directly.
+- **In the GUI:** a password dialog, shown once per run.
+  - The password is first checked with `unix_chkpwd`, the helper PAM itself
+    uses, so a typo can't count against `pam_faillock`. sudo would retry a wrong
+    askpass password three times, which on Arch-based systems locks the
+    account for 10 minutes.
+  - A verified password is then handed to sudo, pacman, paru (`--sudoflags -A`)
+    and the Homebrew installer through a temporary `SUDO_ASKPASS` helper (mode
+    0700, in `$XDG_RUNTIME_DIR`). It's deleted when the run ends.
+  - The password itself is only held in memory and in the environment of the
+    commands grabbit starts.
+- **paru and makepkg always run as you**, never as root.
 
-When restoring, grabbit queries the current system for all places a package name is available:
+## The GUI
 
-- Official/mainline repos of the current package manager
-- AUR (on Arch, via RPC query)
-- Snap, Flatpak, Homebrew (if commands present)
+```sh
+grabbit-gui                    # empty window: scan or open a file
+grabbit-gui my-setup.grab      # open a list
+grabbit-gui my-pc.grab.run     # open a bundle (unpacked first, so its files can be restored)
+grabbit-gui --scan             # start with a scan of this machine
+```
 
-If exactly one option, it uses it (with transposition where appropriate).
+- **Scan Current System** is the equivalent of `grabbit save`. The *System
+  Packages* and *Desktop Environment Packages* toggles match `-sp` and `-de`
+  (they're greyed out while a file is open, because they re-scan).
+- **Filters:** name search, per-source checkboxes and per-category checkboxes.
+  Select, deselect or invert everything visible, or click the checkbox column
+  per package.
+- **Save / Save As:** writes the ticked, visible packages as `.grab` v2,
+  keeping categories, services and groups.
+- **Opening files:** drag and drop a `.grab` or `.grab.run` onto the window.
+  This needs `tkinterdnd2`; otherwise click the drop zone. Open and save dialogs
+  remember the last folder (`~/.config/grabbit/last_dir.txt`).
+- **Installing:** Preview Install Plan, Install Selected and Export Migration
+  Bundle, as described above.
 
-If **multiple options** share the same name (e.g. a package exists in mainline *and* AUR, or cross-distro name collision), grabbit will **prompt you interactively** to choose:
+The menu entry (`grabbit-gui.desktop`) is installed by `install.sh`. It opens
+`.grab` files from your file manager and has a *Scan Current System* action.
+
+## CLI
 
 ```
-Multiple installation options found for 'foo' (original source was: aur)
-   1) official (pacman)
-   2) AUR (paru)
-   3) ...
-Select option: 
+grabbit save <file>                       your packages (no base system, no desktop environment)
+grabbit -sp save <file>                   ...including distro/system packages
+grabbit -de save <file>                   ...including desktop environment packages
+grabbit -x aur,brew save <file>           ...without those sources
+grabbit load <file>                       install a list here
+grabbit -x aur load <file>                ...skipping those sources
+grabbit pack <file.grab.run> [options]    self-installing migration bundle (see above)
+grabbit install [--skip-deps]             install/update grabbit itself
 ```
 
-Non-interactive runs (no tty) will auto-prefer the first "official" match if available.
+`-x` takes a comma-separated list of sources (`aur`, `brew`, `snap`, `flatpak`,
+`base`, …). On its own, `grabbit -x save` is a normal full capture.
 
-This handles ambiguous names gracefully while preferring user control.
+`grabbit load` works in the terminal. For each package it checks the official
+repos, the AUR, Snap, Flatpak and Homebrew. If a name exists in more than one
+place, it asks you which to use; without a terminal it picks the official repo.
+It then installs one package at a time with `sudo`. For a whole machine, use
+the GUI or a bundle: they batch the work and resolve availability in about a
+second.
 
-### Comparison to similar tools
+### What gets captured
 
-grabbit provides unified multi-source (native + AUR + brew + snap + flatpak) lists with automatic cross-distro transposition.
+| Distro family | Packages |
+|---|---|
+| Debian/Ubuntu | `apt-mark showmanual` |
+| Arch & derivatives (incl. CachyOS, EndeavourOS, Manjaro) | `pacman -Qen` (explicit, from a repo) + `pacman -Qem` (explicit, foreign → AUR) |
+| Fedora | `dnf repoquery --userinstalled` |
+| openSUSE | zypper |
+| Alpine | `/etc/apk/world` (bundles) / `apk info` (`save`) |
+| Anywhere | Homebrew (`brew leaves --installed-on-request` + casks), Flatpak apps, Snaps, pipx venvs, `pip --user --not-required` |
 
-| Approach/Tool | Scope | Source Tracking | Cross-Distro | GUI/Audit |
-|---------------|-------|-----------------|--------------|-----------|
-| grabbit     | Multi + unified grab file | Yes (native/AUR/brew/etc) | Yes (command + name map) | Yes (filters + select) |
-| Manual lists (pacman -Qe etc) | Single distro | Manual | No | No |
-| brew bundle | Homebrew only | Homebrew | No | Partial (file) |
-| apt-clone / mintbackup | Debian only | Limited | No | Yes (some) |
-| Warehouse | Flatpak | Flatpak | No | Yes |
-| Ansible/Nix | Full declarative | Full | Yes (strong) | Varies (heavy) |
+Dependencies aren't recorded; the package manager pulls them in again.
+`grabbit save` leaves out base/system and desktop-environment packages unless
+you pass `-sp`/`-de`. `pack` keeps everything and tags it instead, so the choice
+happens on the new machine. Per-distro lists can be extended with
+`~/.config/grabbit/base-excludes.<family>` and `de-packages.<family>`.
 
-grabbit stays simple and focused on personal multi-ecosystem portable lists vs full config mgmt or single-ecosystem tools.
+## File format
 
-## How load works
+A `.grab` file is plain text: `cat` it, diff it, keep it in git.
 
-1. Detects your current distro and package manager.
-2. If the file mentions AUR packages and you're on Arch, makes sure `paru` is installed.
-3. If the file mentions Homebrew packages, makes sure Homebrew is installed.
-4. For every package, builds the correct install command for *this* machine:
-   - Same distro family → uses the original style.
-   - Different family → rewrites the command (`apt install` becomes `pacman -S`, etc.).
-5. Runs the commands (dependencies are handled by the native package manager or `paru`).
+```
+# GRABBIT v2
+# ORIG_DISTRO=endeavouros
+# ORIG_FAMILY=arch
+# ORIG_PM=pacman
+# ORIG_HOME=/home/me
+
+PKG_LIST_START
+PKG firefox:pacman
+PKG brave-bin:aur
+PKG_LIST_END
+
+CAT_LIST_START
+CAT firefox:pacman	user
+CAT_LIST_END
+SVC_LIST_START
+SVC system	docker.service	docker
+SVC_LIST_END
+GRP_LIST_START
+GRP docker
+GRP_LIST_END
+FILE_LIST_START
+FILE link	777	0		~/.local/bin/claude	~/.local/share/claude/versions/2.1.283
+FILE_LIST_END
+```
+
+v1 files are just the header plus the `PKG` block. v2 adds its sections *after*
+`PKG_LIST_END`, where older readers stop, so every grabbit version can read
+every file. Package names are validated (`[A-Za-z0-9@._+/-]`) before they reach
+a command line, and anything else is dropped.
+
+A `.grab.run` bundle is a Bash stub (`grabbit-bundle-stub.sh`) followed by a
+tar.gz payload: `manifest.grab`, `app/` (grabbit itself) and `files/`.
 
 ## Examples
 
-### Typical Arch user backup
-
 ```sh
+# Arch → fresh CachyOS, everything
+grabbit pack ~/my-pc.grab.run            # then double-click it on the new machine
+
+# Just the package list, same distro
 grabbit save ~/arch-setup.grab
-# ... copy the file to a new Arch install
 grabbit load ~/arch-setup.grab
-```
 
-### Move from Ubuntu laptop to Arch desktop (partial)
+# Ubuntu laptop → Arch desktop
+grabbit -x brew save work.grab           # on Ubuntu
+grabbit load work.grab                   # on Arch: apt packages install via pacman
 
-```sh
-# on Ubuntu
-grabbit -x brew save work.grab
-
-# on Arch desktop
-grabbit load work.grab          # will use pacman for the old apt packages
-```
-
-### Only native packages, no helpers
-
-```sh
+# Only native packages
 grabbit -x aur,brew save clean.grab
-grabbit load clean.grab
 ```
 
-## Migrating to a new machine (self-installing bundle)
+## Comparison
 
-`grabbit pack` captures this machine into **one runnable file**. The new machine
-doesn't need grabbit, Python's Tk or anything else first.
+| Tool | Scope | Tracks source | Cross-distro | Restores more than packages | GUI |
+|---|---|---|---|---|---|
+| **grabbit** | native + AUR + brew + flatpak + snap + pipx + pip | yes | yes | loose programs, services, groups | yes (audit + install) |
+| `pacman -Qe` lists | one distro | no | no | no | no |
+| brew bundle | Homebrew | Homebrew | no | no | no |
+| apt-clone / mintbackup | Debian family | partial | no | partial | some |
+| Ansible / Nix | everything, declaratively | yes | yes | yes | varies (heavy) |
 
-```
-grabbit pack ~/my-pc.grab.run                  # everything, including loose programs
-grabbit pack ~/my-pc.grab.run --no-files       # packages, services and groups only
-grabbit pack out.grab.run --skip-file '*.AppImage' --max-file-mb 200
-```
-
-(or **File → Export Migration Bundle** in the GUI)
-
-On the new machine:
-
-1. Copy the file over and mark it executable once: right-click → Properties →
-   Permissions → "Allow executing file as program" (copies via USB sticks and
-   downloads lose that bit). Or skip this and run `bash my-pc.grab.run`.
-2. Double-click it. A terminal opens, updates the system and installs Python + Tk
-   (it asks for your password there), unpacks to
-   `~/.local/share/grabbit/bundles/`, installs grabbit, and opens the GUI.
-3. In the GUI, review the three tabs and press **Install Selected**. It asks for
-   your password once and runs everything in the background with a live log
-   (saved to `~/.local/state/grabbit/`).
-
-What a bundle carries (`.grab` v2):
-
-| Tab | Contents | Restored with |
-|---|---|---|
-| Packages | explicit repo packages, AUR, Homebrew leaves, flatpak, snap, pipx, `pip --user` — each tagged *yours / desktop / system / old distro* | one `pacman -Syu` transaction, one `paru` run, `brew`, `flatpak`, `pipx`, `pip`; a failed batch is retried package by package |
-| Files | programs no package manager owns: `~/.local/bin`, `/usr/local/{bin,sbin}`, `/opt/*`, AppImages near `$HOME`, rack's registry; symlinks keep their targets | copied back to the same place (system paths through sudo); paths under the old `$HOME` land under the new one |
-| Services & groups | enabled systemd units owned by captured packages, your supplementary groups | `systemctl enable --now`, `usermod -aG` (log out to apply) |
-
-Defaults on restore: *system* packages (kernel, bootloader, base) and *old distro*
-packages start unticked, because the new install has its own. Packages the new
-machine can't get anywhere are marked *unavailable* and unticked; the
-**Will install via** column shows repo / aur / brew / ... for the rest.
-
-The password is checked with `unix_chkpwd` before sudo sees it, so a typo can't
-trip pam_faillock (sudo would retry a wrong askpass password three times, which
-locks the account for 10 minutes on Arch). It is kept in memory only and given
-to sudo through a temporary `SUDO_ASKPASS` helper in `$XDG_RUNTIME_DIR`.
-
-Tested end to end in a `cachyos/cachyos` container (fresh databases, no Tk, no
-paru): bootstrap, repo + AUR + Homebrew + pipx + pip installs, file restore
-including a root-owned path, PATH setup.
+grabbit is for moving *your* machine, not for managing a fleet.
 
 ## Limitations
 
-- Package names are used as-is. If a package has a completely different name on the target distro you will need to adjust the file manually or the install will fail for that entry.
-- Some packages are not available everywhere (e.g. most AUR packages only make sense on Arch).
-- Homebrew on Linux installs to `/home/linuxbrew` by default.
-- The CLI `load` asks for sudo in the terminal; the GUI asks once in a dialog.
-- Bundles restore files and packages, not dotfiles/app settings: copy your home directory (or the parts you want) separately.
-- Services are enabled with `--now`; a service whose package you unticked is left out of the plan.
-- Base package exclusion heuristics are improved but not perfect for every edge case.
-- Snap/Flatpak support installs from default remotes (flathub for flatpak).
+- **No settings:** bundles restore programs, not dotfiles or app data. Copy your
+  home directory, or the parts you want, separately.
+- **Names are taken as-is:** a package called something different on the target
+  distro needs editing in the file (or shows up as *unavailable*).
+- **AUR packages only restore on Arch-based systems.**
+- **Homebrew on Linux** installs to `/home/linuxbrew`. grabbit adds its
+  `shellenv` line for bash, zsh and fish.
+- **Flatpaks** come from Flathub. **Snaps on Arch** need `snapd` from the AUR,
+  which grabbit builds.
+- **Services** need systemd running (`--now` starts them). New group
+  memberships apply after you log out and back in.
+- **The executable bit:** a copied bundle usually needs it set again (step 2
+  above).
 
-## Examples and tests
+## Tests
 
-See the `examples/` directory for sample `.grab` files (including cross-distro).
+```sh
+./tests/test_basic.sh        # syntax, parsing, feature checks + tests/test_core.py
+python3 tests/test_core.py   # .grab v2 round trip, v1 compatibility, hostile names,
+                             # install planning, bundle build/extract/restore (offline)
+```
 
-Run `./tests/test_basic.sh` for basic smoke tests (syntax, parsing, feature presence).
+The migration path was tested end to end in a `cachyos/cachyos` container, as a
+normal user with a sudo password, starting with no package databases, no Tk and
+no paru:
+
+- the bootstrap
+- the GUI's install engine: repo and AUR packages (paru set up automatically),
+  a fresh Homebrew install and formula, pipx, pip
+- restoring home-directory and root-owned files
+- the PATH setup
+
+To repeat it:
+
+```sh
+docker run -d --name grabbit-test cachyos/cachyos sleep infinity
+docker exec grabbit-test sh -c 'sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf;
+  useradd -m -G wheel tester; echo tester:test | chpasswd;
+  echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel'
+docker cp my-pc.grab.run grabbit-test:/home/tester/
+docker exec -it -u tester -w /home/tester -e GRABBIT_BUNDLE_NO_GUI=1 grabbit-test \
+  bash my-pc.grab.run --in-terminal
+```
+
+`GRABBIT_BUNDLE_NO_GUI=1` stops after unpacking and installing. `DisableSandbox`
+is only needed because containers can't use pacman's network sandbox.
 
 ## License
 
