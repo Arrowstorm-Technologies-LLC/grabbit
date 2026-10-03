@@ -110,7 +110,18 @@ grabbit pack ~/my-pc.grab.run                               # everything
 grabbit pack ~/my-pc.grab.run --no-files                    # packages, services, groups only
 grabbit pack ~/my-pc.grab.run --skip-file '*.AppImage'      # leave some loose files out (repeatable)
 grabbit pack ~/my-pc.grab.run --max-file-mb 200             # ...or everything above a size
+grabbit pack ~/my-pc.grab.run --no-accounts                 # leave the sign-ins out
 ```
+
+**Sign-ins come along.** The scan also lists your git identity and logins as
+files (each can be unticked): `~/.gitconfig`, `~/.git-credentials`,
+`~/.config/gh` plus the GitHub CLI token (read from the keyring with
+`gh auth token` when the bundle is written), `~/.ssh`, and Claude Code's login,
+settings, skills, plugins, project memory and history (`~/.claude.json`,
+`~/.claude/...`). On restore, gh is signed back in with the token (into the
+keyring when there is one) and the token file is deleted; paths naming the old
+`$HOME` are rewritten, so a different username on the new machine is fine.
+A bundle holding sign-ins is written `0700`: treat it like a password.
 
 `python3 ~/.local/bin/grabbit_core.py info my-pc.grab.run` prints a summary of
 any bundle or `.grab` file.

@@ -985,6 +985,9 @@ class GrabbitGUI:
                    f"Files: {len(m.files)}  ({core.human(size)})\n"
                    f"Services: {len(m.services)}   Groups: {', '.join(m.groups) or 'none'}\n\n"
                    f"Left out: {left_out[0]} packages, {left_out[1]} files.\n\n"
+                   + ("Includes sign-ins (git/GitHub CLI/SSH keys, Claude Code): the bundle is a "
+                      "credential, keep it private.\n\n"
+                      if any(f.key.startswith(core.ACCOUNT_KEY) for f in m.files) else "") +
                    "On the new machine, system and old-distro packages still start unticked, "
                    "so you can decide again there.")
         if not messagebox.askokcancel("Export migration bundle", summary):

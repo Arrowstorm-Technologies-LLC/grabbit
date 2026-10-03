@@ -136,6 +136,55 @@ class BundleTests(unittest.TestCase):
             self.assertTrue(os.access(new_home / ".local/bin/tool", os.X_OK))
             self.assertEqual(os.readlink(new_home / ".local/bin/alias"), str(new_home / ".local/bin/tool"))
 
+    def test_accounts_move_to_a_new_username(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            old, new = tmp / "home/olduser", tmp / "home/newuser"
+            (old / ".claude/projects" / core.claude_project_name(old) / "memory").mkdir(parents=True)
+            (old / ".claude/projects" / core.claude_project_name(old) / "memory/MEMORY.md").write_text(
+                f"- tool at {old}/tool\n")
+            (old / ".claude/.credentials.json").write_text('{"token": "x"}')
+            (old / ".claude/.credentials.json").chmod(0o600)
+            (old / ".claude.json").write_text(f'{{"projects": {{"{old}": {{}}}}}}')
+            (old / ".gitconfig").write_text("[user]\n\tname = me\n")
+            (old / ".ssh").mkdir(mode=0o700)
+            (old / ".ssh/id_ed25519").write_text("KEY")
+            new.mkdir(parents=True)
+            saved = (core.HOME, core.gh_token)
+            try:
+                core.HOME, core.gh_token = old, lambda: "gho_test"
+                acct = core.capture_accounts()
+                dests = {f.dest for f in acct}
+                self.assertTrue({"~/.gitconfig", "~/.ssh", "~/.claude.json", "~/.claude/.credentials.json",
+                                 "~/.claude/projects", core.GH_TOKEN_DEST} <= dests)
+                self.assertTrue(all(f.key.startswith(core.ACCOUNT_KEY) for f in acct))
+                m = sample()
+                m.header["ORIG_HOME"] = str(old)
+                m.files = acct
+                out = core.build_bundle(m, tmp / "b.grab.run", log=lambda _: None)
+                self.assertEqual(out.stat().st_mode & 0o777, 0o700)   # holds sign-ins
+                d = core.extract_bundle(out, tmp / "unpacked")
+                self.assertEqual((d / f"files/{core.ACCOUNT_KEY}gh-token").read_text(), "gho_test\n")
+
+                core.HOME = new
+                steps = core.plan(core.load_path(d / "manifest.grab"), "arch", "pacman", bundle_dir=str(d),
+                                  update_first=False)
+                self.assertIn("gh-login", [s.argv[0] for s in steps])
+                files = next(s for s in steps if s.argv[0] == "restore-files")
+                r = core.Runner([files], core.Sudo(), bundle_dir=str(d), log=lambda _: None)
+                r._run()
+                self.assertTrue(r.results[0][1], r.results)
+            finally:
+                core.HOME, core.gh_token = saved
+            proj = new / ".claude/projects" / core.claude_project_name(new)
+            self.assertEqual((proj / "memory/MEMORY.md").read_text(), f"- tool at {new}/tool\n")
+            self.assertFalse((new / ".claude/projects" / core.claude_project_name(old)).exists())
+            self.assertIn(str(new), (new / ".claude.json").read_text())
+            self.assertNotIn(str(old), (new / ".claude.json").read_text())
+            self.assertEqual((new / ".claude/.credentials.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((new / ".ssh").stat().st_mode & 0o777, 0o700)
+            self.assertEqual((new / ".config/grabbit/gh-token").read_text(), "gho_test\n")
+
     def test_stub_ends_with_marker(self):
         self.assertTrue((ROOT / "grabbit-bundle-stub.sh").read_text().rstrip().endswith(core.PAYLOAD_MARKER))
 

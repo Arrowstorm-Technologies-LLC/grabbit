@@ -18,6 +18,8 @@ sections after PKG_LIST_END, which v1 readers never reach:
 
 FILE dest is "~/..." for files under the original $HOME (restored under the
 new $HOME) or an absolute path (restored with sudo). kind is file|dir|link.
+Keys starting "acct_" are sign-ins (git/GitHub CLI/SSH, Claude Code); text
+files among them that name the old $HOME are rewritten to the new one.
 """
 
 import fnmatch
@@ -413,7 +415,94 @@ def capture_files(pm):
     return out
 
 
-def capture(log=print):
+# ──────────────────────────────────────────────────────────── accounts ───
+# Signed-in tools whose login lives in $HOME: git + GitHub CLI + SSH keys, and
+# Claude Code. All of it is a credential or carries one, so a bundle holding
+# any of it is written 0700. Their keys start with ACCOUNT_KEY.
+ACCOUNT_KEY = "acct_"
+ACCOUNT_PATHS = (
+    "~/.gitconfig", "~/.git-credentials", "~/.config/git", "~/.config/gh", "~/.ssh",
+    "~/.claude.json", "~/.claude/.credentials.json", "~/.claude/settings.json",
+    "~/.claude/settings.local.json", "~/.claude/CLAUDE.md", "~/.claude/keybindings.json",
+    "~/.claude/agents", "~/.claude/commands", "~/.claude/skills", "~/.claude/plugins",
+    "~/.claude/projects", "~/.claude/history.jsonl",
+)
+# gh keeps its token in the system keyring, not in ~/.config/gh: it is read with
+# `gh auth token` when the bundle is written and signed back in on restore.
+GH_TOKEN_DEST = "~/.config/grabbit/gh-token"
+# Restored text files that name the old $HOME by absolute path (rewritten to the new one).
+REWRITE_HOME = ("~/.gitconfig", "~/.ssh/config", "~/.claude.json", "~/.claude/settings.json",
+                "~/.claude/settings.local.json", "~/.claude/history.jsonl", "~/.claude/plugins/*.json",
+                "~/.claude/projects/*/memory/*.md", "~/.local/share/rack/*.tsv")
+
+
+def gh_token():
+    return run(["gh", "auth", "token", "--hostname", "github.com"]).strip() if have("gh") else ""
+
+
+def capture_accounts():
+    out = []
+    for dest in ACCOUNT_PATHS:
+        path = Path(expand(dest))
+        try:
+            st = path.lstat()
+        except OSError:
+            continue
+        key = ACCOUNT_KEY + re.sub(r"[^A-Za-z0-9._-]", "_", dest.lstrip("~/")).lstrip("._")
+        if stat.S_ISDIR(st.st_mode):
+            size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
+            if size:
+                out.append(LooseFile("dir", stat.S_IMODE(st.st_mode), size, key, dest))
+        elif stat.S_ISREG(st.st_mode) and os.access(path, os.R_OK):
+            out.append(LooseFile("file", stat.S_IMODE(st.st_mode), st.st_size, key, dest))
+    token = gh_token()
+    if token:
+        out.append(LooseFile("file", 0o600, len(token) + 1, ACCOUNT_KEY + "gh-token", GH_TOKEN_DEST))
+    return out
+
+
+def claude_project_name(path):
+    """Claude Code names ~/.claude/projects/<dir> after the project path."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def rewrite_home(restored, orig_home, home=None, log=print):
+    """Old $HOME -> this one in the restored files REWRITE_HOME names (and in
+    Claude Code's project directory names). restored: "~/..." dests just written."""
+    home = str(home or HOME)
+    if not orig_home or orig_home == home:
+        return
+    pairs = ((orig_home, home), (claude_project_name(orig_home), claude_project_name(home)))
+    projects = Path(home) / ".claude/projects"
+    if "~/.claude/projects" in restored and projects.is_dir():
+        old = claude_project_name(orig_home)
+        for d in sorted(projects.iterdir()):
+            if d.name == old or d.name.startswith(old + "-"):
+                new = projects / (claude_project_name(home) + d.name[len(old):])
+                shutil.copytree(d, new, symlinks=True, dirs_exist_ok=True)
+                shutil.rmtree(d)
+                log(f"  renamed ~/.claude/projects/{d.name} -> {new.name}")
+    for dest in restored:
+        root = Path(expand(dest, home))
+        for p in ([root] if root.is_file() else root.rglob("*") if root.is_dir() else []):
+            if not p.is_file() or p.is_symlink():
+                continue
+            note = "~" + str(p)[len(home):]
+            if not any(fnmatch.fnmatch(note, g) for g in REWRITE_HOME):
+                continue
+            try:
+                text = p.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            new = text
+            for a, b in pairs:
+                new = new.replace(a, b)
+            if new != text:
+                p.write_text(new)
+                log(f"  {note}: {orig_home} -> {home}")
+
+
+def capture(log=print, accounts=True):
     did, dname, family, pm = detect()
     log(f"Detected {dname} ({family}/{pm})")
     cls = Classifier(family, did)
@@ -426,6 +515,10 @@ def capture(log=print):
     log(f"Groups: {', '.join(groups) or 'none'}")
     files = capture_files(pm)
     log(f"Loose files: {len(files)} ({human(sum(f.size for f in files))})")
+    if accounts:
+        acct = capture_accounts()
+        log(f"Sign-ins (git/GitHub/SSH, Claude Code): {len(acct)} ({human(sum(f.size for f in acct))})")
+        files += acct
     header = {
         "Created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "ORIG_DISTRO": did, "ORIG_FAMILY": family, "ORIG_PM": pm,
@@ -523,6 +616,7 @@ def extract_bundle(path, dest_root=None):
     dest = Path(dest_root or data_home / "grabbit/bundles") / (
         Path(path).name.removesuffix(".run") + datetime.now().strftime("-%Y%m%d-%H%M%S"))
     dest.mkdir(parents=True, exist_ok=True)
+    dest.chmod(0o700)   # may hold sign-ins
     marker = ("\n" + PAYLOAD_MARKER + "\n").encode()
     with open(path, "rb") as fh:
         head = fh.read(64 * 1024)
@@ -563,13 +657,22 @@ def build_bundle(manifest, out_path, log=print, include_files=True):
             for f in files:
                 if f.kind == "link":
                     continue
-                src = expand(f.dest)
                 log(f"  + {f.dest} ({human(f.size)})")
+                if f.dest == GH_TOKEN_DEST:
+                    token = gh_token()
+                    if token:
+                        add_bytes(f"files/{f.key}", (token + "\n").encode(), 0o600)
+                    else:
+                        log("  ! skipped the GitHub CLI token: `gh auth token` gave nothing")
+                    continue
                 try:
-                    tar.add(src, arcname=f"files/{f.key}")
+                    tar.add(expand(f.dest), arcname=f"files/{f.key}")
                 except OSError as e:
                     log(f"  ! skipped {f.dest}: {e}")
-    os.chmod(tmp, 0o755)
+    secret = any(f.key.startswith(ACCOUNT_KEY) for f in files)
+    if secret:
+        log("  ! this bundle holds sign-ins (tokens, SSH keys): it is written 0700, keep it private")
+    os.chmod(tmp, 0o700 if secret else 0o755)
     tmp.replace(out_path)
     return out_path
 
@@ -730,6 +833,8 @@ def plan(manifest, family, pm, bundle_dir=None, update_first=True, orig_home=Non
         steps.append(Step(f"Restore {len(files)} files", ["restore-files"], items=files))
         if any(expand(f.dest).startswith(str(HOME / ".local/bin")) for f in files):
             steps.append(Step("Put ~/.local/bin on PATH", ["path-setup"], optional=True))
+        if any(f.dest == GH_TOKEN_DEST for f in files):
+            steps.append(Step("Sign the GitHub CLI in (bundled token)", ["gh-login"], optional=True))
 
     # a service whose package was captured but not chosen won't exist here: leave it out
     unchosen = {p.name for p in manifest.packages} - {p.name for p in sel}
@@ -910,6 +1015,19 @@ class Runner:
         if kind == "path-setup":
             rc, _ = self._exec(["sh", "-c", PATH_SETUP])
             return rc == 0, ""
+        if kind == "gh-login":
+            token = expand(GH_TOKEN_DEST)
+            if not os.path.isfile(token):
+                return False, "no token restored"
+            if not have("gh"):
+                return False, f"gh is not installed; token left in {token} (gh auth login --with-token < it)"
+            # the keyring when there is one, else gh's own plain-text fallback
+            rc, _ = self._exec(["sh", "-c", 'gh auth login --hostname github.com --with-token < "$1" '
+                                            '&& gh auth status --hostname github.com', "sh", token])
+            if rc != 0:
+                return False, f"gh auth login failed; token left in {token}"
+            os.unlink(token)
+            return True, ""
         if kind == "add-groups":
             user = pwd.getpwuid(os.getuid()).pw_name
             existing = {g.gr_name for g in grp.getgrall()}
@@ -944,7 +1062,7 @@ class Runner:
         if not self.bundle_dir:
             return False, "no bundle payload"
         orig_home = self.steps[0].env.get("GRABBIT_ORIG_HOME", str(HOME)) if self.steps else str(HOME)
-        failed = []
+        failed, restored = [], []
         for f in sorted(files, key=lambda f: f.kind == "link"):   # targets before links
             dest = expand(f.dest)
             system = not dest.startswith(str(HOME) + "/")
@@ -974,9 +1092,7 @@ class Runner:
                         else:
                             shutil.copy2(src, dest)
                             os.chmod(dest, f.mode)
-                            if dest.endswith(".tsv") and "/rack/" in dest and orig_home != str(HOME):
-                                p = Path(dest)
-                                p.write_text(p.read_text().replace(orig_home, str(HOME)))
+                        restored.append(f.dest)
                         ok = True
                     self.log(f"  {f.kind} {f.dest} ({human(f.size)})")
             except OSError as e:
@@ -984,6 +1100,11 @@ class Runner:
                 ok = False
             if not ok:
                 failed.append(f.dest)
+        try:
+            rewrite_home(restored, orig_home, log=self.log)
+        except OSError as e:
+            self.log(f"  ! rewriting {orig_home} paths: {e}")
+            failed.append("(home path rewrite)")
         return not failed, ("failed: " + ", ".join(failed)) if failed else ""
 
 
@@ -998,6 +1119,8 @@ def _cli(argv):
     p.add_argument("--skip-file", action="append", default=[], metavar="GLOB",
                    help="leave out loose files whose path matches (repeatable)")
     p.add_argument("--max-file-mb", type=float, default=0, help="leave out loose files larger than this")
+    p.add_argument("--no-accounts", action="store_true",
+                   help="leave out sign-ins (git/GitHub CLI/SSH keys, Claude Code)")
     s = sub.add_parser("save", help="write a .grab v2 manifest (no files embedded)")
     s.add_argument("out")
     i = sub.add_parser("info", help="summarize a .grab or .grab.run")
@@ -1012,7 +1135,7 @@ def _cli(argv):
         print(f"{len(m.packages)} packages {cats}; {len(m.services)} services; groups {m.groups}; "
               f"{len(m.files)} files ({human(sum(f.size for f in m.files))})")
         return 0
-    m = capture()
+    m = capture(accounts=a.cmd == "pack" and not a.no_accounts)
     if a.cmd == "save":
         Path(a.out).write_text(dumps(m))
         print(f"wrote {a.out}")

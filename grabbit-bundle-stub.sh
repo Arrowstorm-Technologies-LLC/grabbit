@@ -87,7 +87,7 @@ ok "Python + Tk ready"
 # ── unpack
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/grabbit/bundles/$(basename "$SELF" .run)-$(date +%Y%m%d-%H%M%S)"
 step "Unpacking to $DEST"
-mkdir -p "$DEST"
+mkdir -p "$DEST" && chmod 700 "$DEST"   # may hold sign-ins
 line=$(awk -v m="$MARKER" '$0 == m { print NR + 1; exit }' "$SELF")
 [[ -n "$line" ]] || fail "Payload marker missing — the file is damaged."
 tail -n +"$line" "$SELF" | tar -xz -C "$DEST" || fail "Could not unpack the payload (damaged or incomplete copy?)"
