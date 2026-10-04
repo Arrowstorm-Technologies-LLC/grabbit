@@ -838,8 +838,10 @@ def aur_lookup(names, log=print):
     return found
 
 
-def resolve(manifest, family, pm, log=print):
-    """Set Package.via for this machine. Unavailable ones are deselected."""
+def resolve(manifest, family, pm, log=print, target_checks=True):
+    """Set Package.via for this machine. Unavailable ones are deselected.
+    target_checks: also untick what this machine already has / would conflict with
+    (only meaningful when restoring here; a scan of the source machine skips it)."""
     native = {"repo"}
     if pm == "pacman":
         sync = set(lines(["pacman", "-Slq"]))
@@ -871,6 +873,8 @@ def resolve(manifest, family, pm, log=print):
     for p in manifest.packages:
         if p.via == "unavailable":
             p.selected = False
+    if not target_checks:
+        return manifest
     try:
         if pm == "pacman":
             check_pacman_target(manifest, aur or {})

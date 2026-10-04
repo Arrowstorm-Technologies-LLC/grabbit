@@ -66,7 +66,7 @@ grep -q 'core.capture' "$SCRIPT_DIR/grabbit_gui.py"
 grep -q 'category_vars' "$SCRIPT_DIR/grabbit_gui.py"
 grep -q '_audited_manifest' "$SCRIPT_DIR/grabbit_gui.py"
 grep -q 'Grabbit.Treeview' "$SCRIPT_DIR/grabbit_gui.py"
-grep -q 'heading("selected", text="Select"' "$SCRIPT_DIR/grabbit_gui.py"
+grep -q 'self.heading_text = {"selected": "Select"' "$SCRIPT_DIR/grabbit_gui.py"
 echo "  OK"
 
 echo "[8/8] Desktop environment filtering present..."

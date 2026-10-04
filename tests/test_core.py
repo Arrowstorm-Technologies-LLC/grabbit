@@ -187,6 +187,14 @@ class TargetConflictTests(unittest.TestCase):
         self.assertEqual(got["intel-ucode:pacman"], (False, "microcode for intel CPUs; this machine's CPU is amd"))
         self.assertEqual(got["vulkan-radeon:pacman"], (True, ""))
 
+    def test_scan_of_the_source_machine_skips_target_checks(self):
+        # on the machine being scanned, everything is installed: nothing may be unticked for that
+        m = core.Manifest(packages=[core.Package("ufw", "pacman"), core.Package("firewalld", "pacman"),
+                                    core.Package("nvidia-utils", "pacman"), core.Package("eza", "brew")])
+        core.resolve(m, "arch", "pacman", log=lambda _: None, target_checks=False)
+        self.assertEqual([(p.selected, p.note) for p in m.packages], [(True, "")] * 4)
+        self.assertEqual([p.via for p in m.packages], ["repo", "repo", "repo", "brew"])
+
     def test_chwd_owns_gpu_drivers(self):
         core.have = lambda cmd: True
         m = core.Manifest(packages=[core.Package("vulkan-radeon", "pacman", "hardware", True, "repo"),

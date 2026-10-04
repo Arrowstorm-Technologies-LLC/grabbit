@@ -46,6 +46,12 @@ except ImportError:
 # Known sources from grabbit
 KNOWN_SOURCES = ["apt", "pacman", "aur", "brew", "snap", "flatpak", "pipx", "pip", "zypper", "dnf", "apk"]
 EXTERNAL_SOURCES = frozenset({"aur", "brew", "snap", "flatpak", "pipx", "pip"})
+def tick_state(flags):
+    """'ticked/total' for the Select column header (clicking it ticks or unticks them all)."""
+    flags = list(flags)
+    return f"{sum(flags)}/{len(flags)}"
+
+
 CATEGORY_LABELS = {"user": "yours", "default": "came with old OS", "hardware": "hardware", "de": "desktop",
                    "system": "system", "distro": "old distro"}
 
@@ -218,17 +224,19 @@ class GrabbitGUI:
             style="Grabbit.Treeview",
         )
 
-        self.tree.heading("selected", text="Select", anchor=tk.CENTER)
-        self.tree.heading("name", text="Package Name")
-        self.tree.heading("source", text="Source")
-        self.tree.heading("category", text="Category")
-        self.tree.heading("via", text="Will install via")
+        # Select header ticks/unticks everything visible; the others sort (click again to reverse)
+        self.heading_text = {"selected": "Select", "name": "Package Name", "source": "Source",
+                             "category": "Category", "via": "Will install via"}
+        self.sort_col, self.sort_rev = None, False
+        for cid, text in self.heading_text.items():
+            self.tree.heading(cid, text=text, anchor=tk.CENTER if cid == "selected" else tk.W,
+                              command=lambda c=cid: self.on_heading(c))
 
         # stretch=False lets Select/Source resize independently; name absorbs extra width
-        self.tree.column("selected", width=72, minwidth=56, anchor=tk.CENTER, stretch=False)
+        self.tree.column("selected", width=155, minwidth=120, anchor=tk.CENTER, stretch=False)
         self.tree.column("name", width=400, minwidth=160, stretch=True)
-        self.tree.column("source", width=90, minwidth=70, stretch=False)
-        self.tree.column("category", width=100, minwidth=70, stretch=False)
+        self.tree.column("source", width=105, minwidth=80, stretch=False)
+        self.tree.column("category", width=175, minwidth=110, stretch=False)
         self.tree.column("via", width=320, minwidth=80, stretch=False)
 
         vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
@@ -437,7 +445,8 @@ class GrabbitGUI:
 
         def work():
             logs = []
-            core.resolve(m, self.current_family, self.current_pm, log=logs.append)
+            # on the machine being scanned everything is "already installed": only restores check the target
+            core.resolve(m, self.current_family, self.current_pm, log=logs.append, target_checks=not self.is_scan)
             self._ui_queue.put(("resolved", m, logs))
         threading.Thread(target=work, daemon=True).start()
         self._poll_queue()
@@ -456,13 +465,15 @@ class GrabbitGUI:
                         if p["via"] == "unavailable":
                             p["selected"] = False
                             n_unavail += 1
-                        elif p["note"]:      # already here / conflicts / same role: untick, user may re-tick
+                        elif p["note"] and not self.is_scan:   # already here / conflicts: untick, user may re-tick
                             p["selected"] = False
                             n_here += 1
                     self.refresh_tree()
                     note = f" AUR lookup problem: {logs[0]}" if logs else ""
-                    self.status_var.set(f"Availability checked: {n_unavail} not available here, {n_here} already "
-                                        f"covered or conflicting (both unticked; see 'Will install via').{note}")
+                    self.status_var.set(
+                        f"Availability checked: {n_unavail} not available here (unticked).{note}" if self.is_scan else
+                        f"Availability checked: {n_unavail} not available here, {n_here} already "
+                        f"covered or conflicting (both unticked; see 'Will install via').{note}")
                     return
         except queue.Empty:
             pass
@@ -608,7 +619,8 @@ class GrabbitGUI:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        filtered = self.get_filtered_packages()
+        filtered = self._sorted(self.get_filtered_packages())
+        self._update_headings(filtered)
 
         for p in filtered:
             selected_char = "☑" if p.get("selected", True) else "☐"
@@ -621,6 +633,38 @@ class GrabbitGUI:
             ), tags=(p["name"], p["src"]))
 
         self.status_var.set(f"Showing {len(filtered)} / {len(self.packages)} packages")
+
+    SORT_KEYS = {
+        "name": lambda p: p["name"].lower(),
+        "source": lambda p: (p["src"], p["name"].lower()),
+        "category": lambda p: (core.CATEGORIES.index(p.get("category", "user"))
+                               if p.get("category", "user") in core.CATEGORIES else 99, p["name"].lower()),
+        "via": lambda p: (p.get("via", ""), p.get("note", ""), p["name"].lower()),
+    }
+
+    def _sorted(self, pkgs):
+        key = self.SORT_KEYS.get(self.sort_col)
+        return sorted(pkgs, key=key, reverse=self.sort_rev) if key else pkgs
+
+    def _update_headings(self, visible):
+        for cid, text in self.heading_text.items():
+            if cid == "selected":
+                text += " " + tick_state(p.get("selected", True) for p in visible)
+            elif cid == self.sort_col:
+                text += " ↓" if self.sort_rev else " ↑"
+            self.tree.heading(cid, text=text)
+
+    def on_heading(self, col):
+        if col == "selected":
+            visible = self.get_filtered_packages()
+            on = not (visible and all(p.get("selected", True) for p in visible))
+            for p in visible:
+                p["selected"] = on
+        elif self.sort_col == col:
+            self.sort_rev = not self.sort_rev
+        else:
+            self.sort_col, self.sort_rev = col, False
+        self.refresh_tree()
 
     def on_tree_click(self, event):
         # Find which column and row
@@ -690,7 +734,7 @@ class GrabbitGUI:
         self.files_note = ttk.Label(files_frame, text="Programs no package manager tracks. Scan this machine "
                                     "or open a bundle to see them.", wraplength=900)
         self.files_note.pack(fill=tk.X, padx=5, pady=5)
-        self.files_tree = self._make_tree(files_frame, (("selected", "Select", 72), ("dest", "Path", 420),
+        self.files_tree = self._make_tree(files_frame, (("selected", "Select", 155), ("dest", "Path", 420),
                                                          ("kind", "Kind", 60), ("size", "Size", 80),
                                                          ("target", "Link target", 300)))
         self.files_tree.bind("<Button-1>", lambda e: self._toggle_extra(e, self.files_tree))
@@ -699,7 +743,7 @@ class GrabbitGUI:
         self.notebook.add(svc_frame, text="Services & groups")
         ttk.Label(svc_frame, text="Services are enabled (and started) after the packages are installed; "
                   "group membership needs a log-out to apply.", wraplength=900).pack(fill=tk.X, padx=5, pady=5)
-        self.svc_tree = self._make_tree(svc_frame, (("selected", "Select", 72), ("type", "Type", 80),
+        self.svc_tree = self._make_tree(svc_frame, (("selected", "Select", 155), ("type", "Type", 80),
                                                      ("name", "Name", 320), ("scope", "Scope", 80),
                                                      ("package", "From package", 200)))
         self.svc_tree.bind("<Button-1>", lambda e: self._toggle_extra(e, self.svc_tree))
@@ -710,8 +754,10 @@ class GrabbitGUI:
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
         tree = ttk.Treeview(frame, columns=[c[0] for c in cols], show="headings", style="Grabbit.Treeview")
+        tree.heading_text = {cid: text for cid, text, _ in cols}
+        tree.sort_col, tree.sort_rev = None, False
         for cid, text, width in cols:
-            tree.heading(cid, text=text)
+            tree.heading(cid, text=text, command=lambda c=cid, t=tree: self._on_extra_heading(t, c))
             tree.column(cid, width=width, stretch=(cid in ("dest", "name")),
                         anchor=tk.CENTER if cid == "selected" else tk.W)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
@@ -720,19 +766,57 @@ class GrabbitGUI:
         vsb.grid(row=0, column=1, sticky="ns")
         return tree
 
+    def _extra_rows(self, tree):
+        """(iid, ticked, values-after-the-tick, sort keys by column) for a Files / Services tree."""
+        m = self.extras
+        if tree is self.files_tree:
+            for i, f in enumerate(m.files):
+                yield f"f{i}", f.selected, (f.dest, f.kind, core.human(f.size) if f.size else "", f.target), \
+                    {"dest": f.dest.lower(), "kind": f.kind, "size": f.size, "target": f.target.lower()}
+        else:
+            for i, sv in enumerate(m.services):
+                yield f"s{i}", sv.selected, ("service", sv.unit, sv.scope, sv.package), \
+                    {"type": "service", "name": sv.unit.lower(), "scope": sv.scope, "package": sv.package}
+            for g in m.groups:
+                yield f"g:{g}", m.group_selected.get(g, True), ("group", g, "", ""), \
+                    {"type": "group", "name": g, "scope": "", "package": ""}
+
+    def _fill_extra(self, tree):
+        rows = list(self._extra_rows(tree))
+        if tree.sort_col:
+            rows.sort(key=lambda r: (r[3][tree.sort_col], r[2]), reverse=tree.sort_rev)
+        tree.delete(*tree.get_children())
+        for iid, ticked, values, _ in rows:
+            tree.insert("", "end", iid=iid, values=("☑" if ticked else "☐",) + values)
+        for cid, text in tree.heading_text.items():
+            if cid == "selected":
+                text += " " + tick_state(r[1] for r in rows)
+            elif cid == tree.sort_col:
+                text += " ↓" if tree.sort_rev else " ↑"
+            tree.heading(cid, text=text)
+
+    def _on_extra_heading(self, tree, col):
+        m = self.extras
+        if col == "selected":
+            if tree is self.files_tree:
+                on = not all(f.selected for f in m.files)
+                for f in m.files:
+                    f.selected = on
+            else:
+                on = not (all(sv.selected for sv in m.services) and all(m.group_selected.get(g, True) for g in m.groups))
+                for sv in m.services:
+                    sv.selected = on
+                m.group_selected = {g: on for g in m.groups}
+        elif tree.sort_col == col:
+            tree.sort_rev = not tree.sort_rev
+        else:
+            tree.sort_col, tree.sort_rev = col, False
+        self._refresh_extra_tabs()
+
     def _refresh_extra_tabs(self):
         m = self.extras
-        self.files_tree.delete(*self.files_tree.get_children())
-        for i, f in enumerate(m.files):
-            self.files_tree.insert("", "end", iid=f"f{i}", values=(
-                "☑" if f.selected else "☐", f.dest, f.kind, core.human(f.size) if f.size else "", f.target))
-        self.svc_tree.delete(*self.svc_tree.get_children())
-        for i, sv in enumerate(m.services):
-            self.svc_tree.insert("", "end", iid=f"s{i}", values=(
-                "☑" if sv.selected else "☐", "service", sv.unit, sv.scope, sv.package))
-        for g in m.groups:
-            self.svc_tree.insert("", "end", iid=f"g:{g}", values=(
-                "☑" if m.group_selected.get(g, True) else "☐", "group", g, "", ""))
+        self._fill_extra(self.files_tree)
+        self._fill_extra(self.svc_tree)
         tabs = self.notebook.tabs()
         ticked = [f for f in m.files if f.selected]
         size = sum(f.size for f in ticked)
