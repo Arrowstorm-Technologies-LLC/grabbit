@@ -327,6 +327,46 @@ class KmailTests(unittest.TestCase):
             self.assertIn(str(new), (new / ".config/akonadi/akonadiserverrc").read_text())
 
 
+class ShellTests(unittest.TestCase):
+    def test_fish_history_from_bash(self):
+        out = core.fish_history_from_bash("ls\nls\ncd ~/x\n#123\necho a\\b\n", end=1000)
+        self.assertEqual(out, "- cmd: ls\n  when: 997\n- cmd: cd ~/x\n  when: 998\n- cmd: echo a\\\\b\n  when: 999\n")
+
+    def test_login_shell_step_only_when_it_differs(self):
+        me = core.pwd.getpwuid(os.getuid()).pw_shell
+        other = "/usr/bin/fish" if me != "/usr/bin/fish" else "/bin/bash"
+        m = core.Manifest(header={"ORIG_SHELL": me})
+        self.assertFalse(any(s.argv[0] == "login-shell" for s in core.plan(m, "arch", "pacman", update_first=False)))
+        m = core.Manifest(header={"ORIG_SHELL": other})
+        st = [s for s in core.plan(m, "arch", "pacman", update_first=False) if s.argv[0] == "login-shell"]
+        self.assertEqual((st[0].argv, st[0].root, st[0].optional), (["login-shell", other], True, True))
+        m = core.Manifest(header={"ORIG_SHELL": "/bin/bash; rm -rf ~"})        # hostile header: ignored
+        self.assertFalse(any(s.argv[0] == "login-shell" for s in core.plan(m, "arch", "pacman", update_first=False)))
+
+    def test_histories_merge_instead_of_replacing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "old").mkdir(); (tmp / "new").mkdir()
+            (tmp / "old/.bash_history").write_text("old-cmd\n")
+            (tmp / "new/.bash_history").write_text("new-cmd\n")
+            saved = core.HOME
+            try:
+                core.HOME = tmp / "old"
+                acct = [f for f in core.capture_accounts() if "history" in f.dest]
+                self.assertEqual(sorted(f.dest for f in acct), ["~/.bash_history", core.FISH_HISTORY_DEST])
+                m = core.Manifest(header={"ORIG_HOME": str(tmp / "old")}, files=acct)
+                d = core.extract_bundle(core.build_bundle(m, tmp / "b.grab.run", log=lambda _: None), tmp / "x")
+                core.HOME = tmp / "new"
+                r = core.Runner([core.Step("r", ["restore-files"], items=acct)], core.Sudo(), bundle_dir=str(d),
+                                log=lambda _: None)
+                r._run()
+            finally:
+                core.HOME = saved
+            self.assertEqual((tmp / "new/.bash_history").read_text(), "old-cmd\nnew-cmd\n")
+            self.assertFalse((tmp / "new/.bash_history.pre-grabbit").exists())
+            self.assertIn("- cmd: old-cmd\n", (tmp / "new/.local/share/fish/fish_history").read_text())
+
+
 class OriginTests(unittest.TestCase):
     def test_installer_image_vs_added_later(self):
         log = ("[2026-02-17T20:34:35-0600] [ALPM] installed grub (2.14-2)\n"

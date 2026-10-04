@@ -138,7 +138,12 @@ prompt is never needed. Also carried: the Railway CLI (login, the CLI itself and
 its PATH snippet), the Stripe, Grok and Copilot CLI logins, the adb key (paired
 phones/headsets stay authorized) and `~/.bashrc` / `~/.bash_profile`, which put
 those tools on PATH. A restored file never silently replaces a different one
-already on the new machine: that one is kept as `<file>.pre-grabbit`. On restore, gh is signed back in with the token (into the
+already on the new machine: that one is kept as `<file>.pre-grabbit`.
+Shell setup travels too: fish's `conf.d` and completions next to the bash files,
+your bash history, and a fish history made from it (when fish isn't in use yet).
+Histories merge into whatever the new machine already has. The bundle also
+records your login shell; if the new install defaults to another one (CachyOS
+uses fish), restoring sets yours back with `usermod -s` (`chsh -s` as root). On restore, gh is signed back in with the token (into the
 keyring when there is one) and the token file is deleted; paths naming the old
 `$HOME` are rewritten, so a different username on the new machine is fine.
 A bundle holding sign-ins is written `0700`: treat it like a password.

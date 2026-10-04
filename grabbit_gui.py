@@ -890,6 +890,8 @@ class GrabbitGUI:
                                     "conflicts with an enabled unit, or another enabled service does its job:\n")
                 for it in st.items:
                     text.insert(tk.END, f"     {it}\n")
+            elif st.argv[0] == "login-shell":
+                text.insert(tk.END, f"     usermod -s {st.argv[1]} (same as chsh -s {st.argv[1]}; new terminals use it)\n")
             elif st.argv[0] in ("restore-files", "add-groups", "path-setup"):
                 for it in st.items:
                     text.insert(tk.END, f"     {getattr(it, 'dest', it)}\n")

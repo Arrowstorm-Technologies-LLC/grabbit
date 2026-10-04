@@ -595,7 +595,8 @@ def capture_files(pm):
 # Signed-in tools whose login lives in $HOME: git + GitHub CLI + SSH keys,
 # Claude Code, KMail (Akonadi accounts + their KWallet passwords), the Railway,
 # Stripe, Grok and Copilot CLIs, the adb key (paired devices stay authorized),
-# plus the bash startup files that put those CLIs on PATH. All of it is a credential or carries one, so a bundle holding
+# plus the shell setup that puts those CLIs on PATH (bash startup files, fish
+# conf.d + completions) and the command history of both shells. All of it is a credential or carries one, so a bundle holding
 # any of it is written 0700. Their keys start with ACCOUNT_KEY.
 ACCOUNT_KEY = "acct_"
 ACCOUNT_PATHS = (
@@ -609,7 +610,8 @@ ACCOUNT_PATHS = (
     "~/.railway/config.json", "~/.railway/env", "~/.railway/env.fish", "~/.railway/bin",
     "~/.config/stripe", "~/.grok/auth.json", "~/.grok/config.toml", "~/.grok/agent_id", "~/.grok/skills",
     "~/.copilot/config.json", "~/.android/adbkey", "~/.android/adbkey.pub",
-    "~/.bashrc", "~/.bash_profile",
+    "~/.bashrc", "~/.bash_profile", "~/.bash_history",
+    "~/.config/fish/conf.d", "~/.config/fish/completions",
 )
 # gh keeps its token in the system keyring, not in ~/.config/gh: it is read with
 # `gh auth token` when the bundle is written and signed back in on restore.
@@ -618,6 +620,10 @@ GH_TOKEN_DEST = "~/.config/grabbit/gh-token"
 # the bundle is written, written back on restore (never through KMail's password
 # prompt, which drops it in kdepim-runtime 26.08.1).
 KMAIL_WALLET_DEST = "~/.config/grabbit/kmail-wallet.json"
+# fish's history, converted from ~/.bash_history when the bundle is written.
+FISH_HISTORY_DEST = "~/.local/share/fish/fish_history"
+# Histories merge into what the new machine already has instead of replacing it.
+MERGE_ON_RESTORE = ("~/.bash_history", FISH_HISTORY_DEST)
 # Restored text files that name the old $HOME by absolute path (rewritten to the new one).
 REWRITE_HOME = ("~/.config/akonadi/akonadiserverrc", "~/.railway/env", "~/.railway/env.fish",
                 "~/.railway/config.json", "~/.bashrc", "~/.bash_profile", "~/.grok/config.toml", "~/.config/akonadi_*rc", "~/.config/kmail2rc",
@@ -656,6 +662,21 @@ def kmail_wallet_secrets():
     return {"entries": got} if got else None
 
 
+def fish_history_from_bash(text, end=None):
+    """~/.bash_history -> fish_history (consecutive repeats dropped; bash keeps no
+    times here, so they count up to `end` one second apart)."""
+    cmds = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if line and not line.startswith("#") and (not cmds or cmds[-1] != line):
+            cmds.append(line)
+    end = int(end or time.time())
+    out = []
+    for i, cmd in enumerate(cmds):
+        out.append(f"- cmd: {cmd.replace(chr(92), chr(92) * 2)}\n  when: {end - len(cmds) + i}\n")
+    return "".join(out)
+
+
 def capture_accounts():
     out = []
     dests = []
@@ -680,6 +701,11 @@ def capture_accounts():
     token = gh_token()
     if token:
         out.append(LooseFile("file", 0o600, len(token) + 1, ACCOUNT_KEY + "gh-token", GH_TOKEN_DEST))
+    fish_hist, bash_hist = Path(expand(FISH_HISTORY_DEST)), Path(expand("~/.bash_history"))
+    if fish_hist.is_file():                 # fish already in use here: its own history travels
+        out.append(LooseFile("file", 0o600, fish_hist.stat().st_size, ACCOUNT_KEY + "fish_history", FISH_HISTORY_DEST))
+    elif bash_hist.is_file():               # otherwise it's made from bash's when the bundle is written
+        out.append(LooseFile("file", 0o600, bash_hist.stat().st_size, ACCOUNT_KEY + "fish_history", FISH_HISTORY_DEST))
     if have("kwallet-query") and kmail_wallet_entries() and any(f.dest == "~/.config/mailtransports" or
                                                                "akonadi_imap" in f.dest for f in out):
         out.append(LooseFile("file", 0o600, 256, ACCOUNT_KEY + "kmail-wallet", KMAIL_WALLET_DEST))
@@ -763,6 +789,7 @@ def capture(log=print, accounts=True):
         "ORIG_DISTRO": did, "ORIG_FAMILY": family, "ORIG_PM": pm,
         "ORIG_DISTRO_NAME": f'"{dname}"', "ORIG_HOME": str(HOME),
         "ORIG_USER": pwd.getpwuid(os.getuid()).pw_name,
+        "ORIG_SHELL": pwd.getpwuid(os.getuid()).pw_shell,
         "ORIG_GPU": ",".join(sorted(hw["gpu"])) or "unknown", "ORIG_CPU": hw["cpu"] or "unknown",
     }
     return Manifest(header, pkgs, services, groups, files)
@@ -899,6 +926,14 @@ def build_bundle(manifest, out_path, log=print, include_files=True):
                 if f.kind == "link":
                     continue
                 log(f"  + {f.dest} ({human(f.size)})")
+                if f.dest == FISH_HISTORY_DEST and not os.path.exists(expand(f.dest)):
+                    try:
+                        hist = Path(expand("~/.bash_history"))
+                        add_bytes(f"files/{f.key}", fish_history_from_bash(hist.read_text(errors="replace"),
+                                                                           hist.stat().st_mtime).encode(), 0o600)
+                    except OSError as e:
+                        log(f"  ! skipped the fish history: {e}")
+                    continue
                 if f.dest == KMAIL_WALLET_DEST:
                     secrets = kmail_wallet_secrets()
                     if secrets:
@@ -1349,6 +1384,10 @@ def plan(manifest, family, pm, bundle_dir=None, update_first=True, orig_home=Non
     if groups:
         steps.append(Step(f"Add {user} to groups: {', '.join(groups)}", ["add-groups"], items=groups,
                           optional=True))
+    shell = manifest.header.get("ORIG_SHELL", "")
+    if re.match(r"^/[\w/.+-]+$", shell or "") and shell != pwd.getpwuid(os.getuid()).pw_shell:
+        steps.append(Step(f"Make {shell} your login shell again", ["login-shell", shell], root=True,
+                          optional=True))
     for s in steps:
         s.env.setdefault("GRABBIT_ORIG_HOME", orig_home or manifest.header.get("ORIG_HOME", str(HOME)))
     return steps
@@ -1528,6 +1567,15 @@ class Runner:
             detail = "; ".join(([f"failed: {', '.join(failed)}"] if failed else [])
                                + ([f"skipped: {', '.join(skipped)}"] if skipped else []))
             return not failed, detail
+        if kind == "login-shell":
+            shell, user = step.argv[1], pwd.getpwuid(os.getuid()).pw_name
+            listed = Path("/etc/shells").read_text().split() if Path("/etc/shells").is_file() else []
+            if not os.access(shell, os.X_OK) or shell not in listed:
+                return False, f"{shell} isn't an installed login shell here"
+            rc, _ = self._exec(["usermod", "-s", shell, user], root=True)
+            if rc == 0:
+                self.log(f"  {user}'s login shell is now {shell} (applies to new terminals/logins)")
+            return rc == 0, ""
         if kind == "kmail-wallet":
             return self._kmail_wallet()
         if kind == "gh-login":
@@ -1630,9 +1678,15 @@ class Runner:
                               self._exec(["cp", "-a", "--no-preserve=ownership", "-T", src, dest], root=True)[0] == 0)
                     else:
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
-                        keep_original(dest, src)
+                        if f.dest not in MERGE_ON_RESTORE:
+                            keep_original(dest, src)
                         if f.kind == "dir":
                             shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+                        elif f.dest in MERGE_ON_RESTORE and os.path.isfile(dest):
+                            # old machine's history first, then whatever this one already has
+                            mine = Path(dest).read_bytes()
+                            merged = Path(src).read_bytes()
+                            Path(dest).write_bytes(merged + (b"" if merged.endswith(b"\n") else b"\n") + mine)
                         else:
                             shutil.copy2(src, dest)
                             os.chmod(dest, f.mode)
