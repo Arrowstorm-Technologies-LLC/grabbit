@@ -441,8 +441,44 @@ def pacman_owner(path):
     return out.splitlines()[0] if out else ""
 
 
-def capture_services(pm, package_names):
-    """Enabled units whose unit file belongs to one of the captured packages."""
+def pacman_required_by(pkg):
+    """Installed packages that depend on `pkg` directly."""
+    out = run(["pacman", "-Qi", pkg], env=dict(os.environ, LC_ALL="C"))
+    m = re.search(r"^Required By\s*:\s*(.*?)(?=^\S)", out + "\nEnd", re.M | re.S)
+    names = m.group(1).split() if m else []
+    return [] if names == ["None"] else names
+
+
+def capture_services(pm, packages, classifier=None):
+    """Enabled units whose unit file belongs to a captured package, or to a
+    dependency one pulled in (proton.VPN.service comes with proton-vpn-daemon, which
+    proton-vpn-gtk-app requires): those are attached to that captured package, so
+    the service follows its tick. Dependencies that came with the OS install
+    (systemd, util-linux, avahi, pipewire, ...) are left out: the new OS runs its own."""
+    cats = {p.name: p.category for p in packages}
+    rank = {c: i for i, c in enumerate(CATEGORIES)}
+    deps = set(lines(["pacman", "-Qqd"])) if pm == "pacman" else set()
+    added = added_after_install(pm)       # None: can't tell, fall back to the classifier
+    chooser = {}
+
+    def chosen_for(owner):
+        """The captured package that (transitively, 4 levels) requires `owner`, preferring
+        the most likely ticked category."""
+        if owner not in chooser:
+            seen, frontier, found = {owner}, [owner], set()
+            for _ in range(4):
+                nxt = []
+                for pkg in frontier:
+                    for r in pacman_required_by(pkg):
+                        if r in cats:
+                            found.add(r)
+                        elif r not in seen:
+                            seen.add(r)
+                            nxt.append(r)
+                frontier = nxt
+            chooser[owner] = min(found, key=lambda n: (rank.get(cats[n], 99), n)) if found else ""
+        return chooser[owner]
+
     services = []
     for scope, cmd in (("system", ["systemctl"]), ("user", ["systemctl", "--user"])):
         for l in lines(cmd + ["list-unit-files", "--state=enabled", "--no-legend",
@@ -452,8 +488,15 @@ def capture_services(pm, package_names):
                 continue
             path = run(cmd + ["show", "-P", "FragmentPath", unit]).strip()
             owner = pacman_owner(path) if (pm == "pacman" and path) else ""
-            if owner and owner in package_names:
+            if not owner:
+                continue
+            if owner in cats:
                 services.append(Service(unit, scope, owner))
+            elif owner in deps and (owner in added if added is not None else
+                                    classifier is None or classifier.category(owner, "pacman") != "os"):
+                via = chosen_for(owner)
+                if via:
+                    services.append(Service(unit, scope, via))
     return services
 
 
@@ -549,8 +592,8 @@ def capture_files(pm):
 
 
 # ──────────────────────────────────────────────────────────── accounts ───
-# Signed-in tools whose login lives in $HOME: git + GitHub CLI + SSH keys, and
-# Claude Code. All of it is a credential or carries one, so a bundle holding
+# Signed-in tools whose login lives in $HOME: git + GitHub CLI + SSH keys,
+# Claude Code, and KMail (Akonadi accounts + their KWallet passwords). All of it is a credential or carries one, so a bundle holding
 # any of it is written 0700. Their keys start with ACCOUNT_KEY.
 ACCOUNT_KEY = "acct_"
 ACCOUNT_PATHS = (
@@ -559,12 +602,20 @@ ACCOUNT_PATHS = (
     "~/.claude/settings.local.json", "~/.claude/CLAUDE.md", "~/.claude/keybindings.json",
     "~/.claude/agents", "~/.claude/commands", "~/.claude/skills", "~/.claude/plugins",
     "~/.claude/projects", "~/.claude/history.jsonl",
+    "~/.config/kmail2rc", "~/.config/emailidentities", "~/.config/mailtransports", "~/.config/akonadi",
+    "~/.config/akonadi_*_resource_*rc", "~/.local/share/local-mail",
 )
 # gh keeps its token in the system keyring, not in ~/.config/gh: it is read with
 # `gh auth token` when the bundle is written and signed back in on restore.
 GH_TOKEN_DEST = "~/.config/grabbit/gh-token"
+# KMail's passwords live in KWallet, not in its config: read with kwallet-query when
+# the bundle is written, written back on restore (never through KMail's password
+# prompt, which drops it in kdepim-runtime 26.08.1).
+KMAIL_WALLET_DEST = "~/.config/grabbit/kmail-wallet.json"
 # Restored text files that name the old $HOME by absolute path (rewritten to the new one).
-REWRITE_HOME = ("~/.gitconfig", "~/.ssh/config", "~/.claude.json", "~/.claude/settings.json",
+REWRITE_HOME = ("~/.config/akonadi/akonadiserverrc", "~/.config/akonadi_*rc", "~/.config/kmail2rc",
+                "~/.config/emailidentities", "~/.config/mailtransports",
+                "~/.gitconfig", "~/.ssh/config", "~/.claude.json", "~/.claude/settings.json",
                 "~/.claude/settings.local.json", "~/.claude/history.jsonl", "~/.claude/plugins/*.json",
                 "~/.claude/projects/*/memory/*.md", "~/.local/share/rack/*.tsv")
 
@@ -573,9 +624,40 @@ def gh_token():
     return run(["gh", "auth", "token", "--hostname", "github.com"]).strip() if have("gh") else ""
 
 
+def kmail_wallet_entries():
+    """(folder, key) of the KWallet passwords KMail's accounts use: one per IMAP
+    resource that still has a config, one per mail transport."""
+    home = Path(expand("~"))
+    entries = [("imap", f.name) for f in sorted((home / ".config").glob("akonadi_imap_resource_*rc"))]
+    try:
+        ids = re.findall(r"^\[Transport (\d+)\]", (home / ".config/mailtransports").read_text(), re.M)
+    except OSError:
+        ids = []
+    return entries + [("mailtransports", i) for i in ids]
+
+
+def kmail_wallet_secrets():
+    """{"entries": [[folder, key, password], ...]} read from kdewallet (may ask to unlock it)."""
+    if not have("kwallet-query"):
+        return None
+    got = []
+    for folder, key in kmail_wallet_entries():
+        r = subprocess.run(["kwallet-query", "-r", key, "-f", folder, "kdewallet"], capture_output=True,
+                           text=True, check=False)
+        if r.returncode == 0 and r.stdout.rstrip("\n"):
+            got.append([folder, key, r.stdout.rstrip("\n")])
+    return {"entries": got} if got else None
+
+
 def capture_accounts():
     out = []
+    dests = []
     for dest in ACCOUNT_PATHS:
+        if "*" in dest:
+            dests += sorted(home_notation(p) for p in Path(expand("~")).glob(dest[2:]))
+        else:
+            dests.append(dest)
+    for dest in dests:
         path = Path(expand(dest))
         try:
             st = path.lstat()
@@ -591,6 +673,9 @@ def capture_accounts():
     token = gh_token()
     if token:
         out.append(LooseFile("file", 0o600, len(token) + 1, ACCOUNT_KEY + "gh-token", GH_TOKEN_DEST))
+    if have("kwallet-query") and kmail_wallet_entries() and any(f.dest == "~/.config/mailtransports" or
+                                                               "akonadi_imap" in f.dest for f in out):
+        out.append(LooseFile("file", 0o600, 256, ACCOUNT_KEY + "kmail-wallet", KMAIL_WALLET_DEST))
     return out
 
 
@@ -642,7 +727,7 @@ def capture(log=print, accounts=True):
     pkgs = capture_packages(family, pm, cls)
     log(f"Packages: {len(pkgs)}")
     names = {p.name for p in pkgs}
-    services = capture_services(pm, names)
+    services = capture_services(pm, pkgs, cls)
     log(f"Enabled services from those packages: {len(services)}")
     groups = capture_groups()
     log(f"Groups: {', '.join(groups) or 'none'}")
@@ -795,6 +880,13 @@ def build_bundle(manifest, out_path, log=print, include_files=True):
                 if f.kind == "link":
                     continue
                 log(f"  + {f.dest} ({human(f.size)})")
+                if f.dest == KMAIL_WALLET_DEST:
+                    secrets = kmail_wallet_secrets()
+                    if secrets:
+                        add_bytes(f"files/{f.key}", json.dumps(secrets).encode(), 0o600)
+                    else:
+                        log("  ! skipped KMail's passwords: KWallet gave none (is it unlocked?)")
+                    continue
                 if f.dest == GH_TOKEN_DEST:
                     token = gh_token()
                     if token:
@@ -1219,6 +1311,8 @@ def plan(manifest, family, pm, bundle_dir=None, update_first=True, orig_home=Non
             steps.append(Step("Put ~/.local/bin on PATH", ["path-setup"], optional=True))
         if any(f.dest == GH_TOKEN_DEST for f in files):
             steps.append(Step("Sign the GitHub CLI in (bundled token)", ["gh-login"], optional=True))
+        if any(f.dest == KMAIL_WALLET_DEST for f in files):
+            steps.append(Step("Put KMail's passwords into KWallet", ["kmail-wallet"], optional=True))
 
     # a service whose package was captured but not chosen won't exist here: leave it out
     unchosen = {p.name for p in manifest.packages} - {p.name for p in sel}
@@ -1415,6 +1509,8 @@ class Runner:
             detail = "; ".join(([f"failed: {', '.join(failed)}"] if failed else [])
                                + ([f"skipped: {', '.join(skipped)}"] if skipped else []))
             return not failed, detail
+        if kind == "kmail-wallet":
+            return self._kmail_wallet()
         if kind == "gh-login":
             token = expand(GH_TOKEN_DEST)
             if not os.path.isfile(token):
@@ -1457,6 +1553,34 @@ class Runner:
             if rc != 0:
                 failed.append(item)
         return not failed, ("failed: " + ", ".join(failed)) if failed else "installed one by one"
+
+    def _kmail_wallet(self):
+        """Write the bundled KMail passwords straight into kdewallet (KWallet asks to
+        create or unlock it if needed), then restart Akonadi so the accounts log in."""
+        path = expand(KMAIL_WALLET_DEST)
+        if not os.path.isfile(path):
+            return False, "no KMail passwords restored"
+        if not have("kwallet-query"):
+            return False, f"kwallet-query is missing (install kwallet); passwords left in {path}"
+        try:
+            entries = json.loads(Path(path).read_text())["entries"]
+        except (OSError, ValueError, KeyError) as e:
+            return False, f"unreadable {path}: {e}"
+        if have("akonadictl"):
+            self._exec(["akonadictl", "stop"])
+        failed = []
+        for folder, key, pw in entries:
+            r = subprocess.run(["kwallet-query", "-w", key, "-f", folder, "kdewallet"], input=pw, text=True,
+                               capture_output=True, check=False)
+            self.log(f"  {folder}/{key}: {'stored' if r.returncode == 0 else 'FAILED ' + r.stderr.strip()}")
+            if r.returncode != 0:
+                failed.append(f"{folder}/{key}")
+        if have("akonadictl"):
+            self._exec(["akonadictl", "start"])
+        if failed:
+            return False, f"not stored: {', '.join(failed)}; passwords left in {path}"
+        os.unlink(path)
+        return True, ""
 
     def _restore_files(self, files):
         if not self.bundle_dir:

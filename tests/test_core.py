@@ -5,6 +5,7 @@ $HOME. Nothing here installs packages or needs root/network.
 
     python3 tests/test_core.py
 """
+import json
 import os
 import shutil
 import subprocess
@@ -230,6 +231,100 @@ class TargetConflictTests(unittest.TestCase):
                           services=[core.Service("docker.service", "system", "docker")])
         st = next(s for s in core.plan(m, "arch", "pacman", update_first=False) if "services" in s.label)
         self.assertEqual((st.argv, st.items, st.root), (["enable-units", "system"], ["docker.service"], True))
+
+
+FAKE_PACMAN_SVC = r"""#!/usr/bin/env python3
+import sys
+owners = {"/u/vpn.service": "vpn-daemon", "/u/fstrim.timer": "util-linux", "/u/docker.service": "docker"}
+reqby = {"vpn-daemon": "vpn-lib", "vpn-lib": "vpn-gui vpn-cli", "util-linux": "cups"}
+a = sys.argv[1:]
+if a == ["-Qqd"]: print("vpn-daemon\nvpn-lib\nutil-linux")
+elif a[0] == "-Qoq": print(owners.get(a[1], "")); sys.exit(0 if a[1] in owners else 1)
+elif a[0] == "-Qi": print(f"Name            : {a[1]}\nRequired By     : {reqby.get(a[1], 'None')}\nOptional For    : None")
+"""
+FAKE_SYSTEMCTL_SVC = r"""#!/usr/bin/env python3
+import sys
+units = {"vpn.service": "/u/vpn.service", "fstrim.timer": "/u/fstrim.timer", "docker.service": "/u/docker.service"}
+a = [x for x in sys.argv[1:] if x != "--user"]
+if a[0] == "list-unit-files": print("" if "--user" in sys.argv else "\n".join(f"{u} enabled enabled" for u in units))
+elif a[:3] == ["show", "-P", "FragmentPath"]: print(units.get(a[3], ""))
+"""
+
+
+class ServiceCaptureTests(unittest.TestCase):
+    def test_dependency_services_follow_the_package_that_pulled_them_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bin(tmp, "pacman", FAKE_PACMAN_SVC)
+            fake_bin(tmp, "systemctl", FAKE_SYSTEMCTL_SVC)
+            saved = (os.environ["PATH"], core.added_after_install)
+            os.environ["PATH"] = f"{tmp}:{os.environ['PATH']}"
+            # vpn-daemon was installed later (with the VPN); util-linux came with the OS
+            core.added_after_install = lambda pm: {"vpn-daemon", "vpn-lib", "vpn-gui", "vpn-cli", "docker", "cups"}
+            try:
+                pkgs = [core.Package("vpn-gui", "pacman", "os"), core.Package("vpn-cli", "pacman", "user"),
+                        core.Package("docker", "pacman", "user"), core.Package("cups", "pacman", "user")]
+                got = {s.unit: s.package for s in core.capture_services("pacman", pkgs)}
+            finally:
+                os.environ["PATH"], core.added_after_install = saved
+        # 2 levels up; the "user" requirer wins over the "os" one, so it follows a ticked package
+        self.assertEqual(got, {"vpn.service": "vpn-cli", "docker.service": "docker"})
+
+
+FAKE_KWALLET = r"""#!/usr/bin/env python3
+import sys, json, os
+db = os.environ["FAKE_WALLET"]
+w = json.load(open(db)) if os.path.exists(db) else {}
+a = sys.argv[1:]
+key, folder = a[1], a[3]
+if a[0] == "-r":
+    v = w.get(folder, {}).get(key)
+    sys.exit(1) if v is None else print(v)
+elif a[0] == "-w":
+    w.setdefault(folder, {})[key] = sys.stdin.read()
+    json.dump(w, open(db, "w"))
+"""
+
+
+class KmailTests(unittest.TestCase):
+    def test_passwords_travel_through_the_bundle_into_kwallet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            fake_bin(tmp, "kwallet-query", FAKE_KWALLET)
+            fake_bin(tmp, "akonadictl", "#!/bin/sh\nexit 0\n")      # never touch the real Akonadi
+            old, new = tmp / "old", tmp / "new"
+            (old / ".config").mkdir(parents=True)
+            (old / ".config/akonadi_imap_resource_0rc").write_text("[network]\nImapServer=example.org\n")
+            (old / ".config/mailtransports").write_text("[Transport 42]\nid=42\n")
+            (old / ".config/akonadi").mkdir()
+            (old / ".config/akonadi/akonadiserverrc").write_text(f"[QSQLITE]\nName={old}/.local/share/akonadi/akonadi.db\n")
+            Path(tmp / "old.json").write_text(json.dumps({"imap": {"akonadi_imap_resource_0rc": "imap-pw"},
+                                                          "mailtransports": {"42": "smtp-pw"}}))
+            new.mkdir()
+            saved = (os.environ["PATH"], core.HOME, core.gh_token, os.environ.get("FAKE_WALLET"))
+            os.environ["PATH"] = f"{tmp}:{os.environ['PATH']}"
+            os.environ["FAKE_WALLET"] = str(tmp / "old.json")
+            try:
+                core.HOME, core.gh_token = old, lambda: ""
+                acct = core.capture_accounts()
+                self.assertIn(core.KMAIL_WALLET_DEST, [f.dest for f in acct])
+                m = core.Manifest(header={"ORIG_HOME": str(old)}, files=acct)
+                d = core.extract_bundle(core.build_bundle(m, tmp / "b.grab.run", log=lambda _: None), tmp / "x")
+                core.HOME = new
+                os.environ["FAKE_WALLET"] = str(tmp / "new.json")          # the new machine's empty wallet
+                steps = core.plan(core.load_path(d / "manifest.grab"), "arch", "pacman", bundle_dir=str(d),
+                                  update_first=False)
+                steps = [s for s in steps if s.argv[0] in ("restore-files", "kmail-wallet")]
+                r = core.Runner(steps, core.Sudo(), bundle_dir=str(d), log=lambda _: None)
+                r._run()
+                self.assertTrue(all(ok for _, ok, _ in r.results), r.results)
+            finally:
+                os.environ["PATH"], core.HOME, core.gh_token, _ = saved
+                if saved[3] is None:
+                    os.environ.pop("FAKE_WALLET", None)
+            self.assertEqual(json.loads((tmp / "new.json").read_text()),
+                             {"imap": {"akonadi_imap_resource_0rc": "imap-pw"}, "mailtransports": {"42": "smtp-pw"}})
+            self.assertFalse((new / ".config/grabbit/kmail-wallet.json").exists())   # removed once stored
+            self.assertIn(str(new), (new / ".config/akonadi/akonadiserverrc").read_text())
 
 
 class OriginTests(unittest.TestCase):

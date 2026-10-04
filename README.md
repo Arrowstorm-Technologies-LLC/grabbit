@@ -129,9 +129,12 @@ grabbit pack ~/my-pc.grab.run --no-accounts                 # leave the sign-ins
 **Sign-ins come along.** The scan also lists your git identity and logins as
 files (each can be unticked): `~/.gitconfig`, `~/.git-credentials`,
 `~/.config/gh` plus the GitHub CLI token (read from the keyring with
-`gh auth token` when the bundle is written), `~/.ssh`, and Claude Code's login,
+`gh auth token` when the bundle is written), `~/.ssh`, Claude Code's login,
 settings, skills, plugins, project memory and history (`~/.claude.json`,
-`~/.claude/...`). On restore, gh is signed back in with the token (into the
+`~/.claude/...`), and KMail's accounts (Akonadi resource configs, identities,
+transports) with their passwords, read from KWallet when the bundle is written
+and written straight back into KWallet on restore, so KMail's own password
+prompt is never needed. On restore, gh is signed back in with the token (into the
 keyring when there is one) and the token file is deleted; paths naming the old
 `$HOME` are rewritten, so a different username on the new machine is fine.
 A bundle holding sign-ins is written `0700`: treat it like a password.
@@ -353,7 +356,11 @@ grabbit is for moving *your* machine, not for managing a fleet.
     supplies here, or that the bundle installs natively.
 
   A service follows its package, so an unticked `firewalld` also leaves
-  `firewalld.service` disabled. Each remaining service is checked again right
+  `firewalld.service` disabled. Services of a dependency you didn't install
+  yourself (e.g. `proton.VPN.service` from `proton-vpn-daemon`, `libvirtd` from
+  `libvirt`) are captured too and follow the package that pulled them in;
+  dependencies that came with the OS install (systemd, avahi, pipewire, ...) are
+  left to the new OS. Each remaining service is checked again right
   before it's enabled, and skipped if it isn't installed, is already on,
   conflicts (`Conflicts=`) with an enabled unit, would take an alias another
   unit holds (`display-manager.service`), or another enabled service already
