@@ -1385,7 +1385,8 @@ def plan(manifest, family, pm, bundle_dir=None, update_first=True, orig_home=Non
         steps.append(Step(f"Add {user} to groups: {', '.join(groups)}", ["add-groups"], items=groups,
                           optional=True))
     shell = manifest.header.get("ORIG_SHELL", "")
-    if re.match(r"^/[\w/.+-]+$", shell or "") and shell != pwd.getpwuid(os.getuid()).pw_shell:
+    if re.match(r"^/[\w/.+-]+$", shell or "") and \
+            os.path.realpath(shell) != os.path.realpath(pwd.getpwuid(os.getuid()).pw_shell):
         steps.append(Step(f"Make {shell} your login shell again", ["login-shell", shell], root=True,
                           optional=True))
     for s in steps:
@@ -1570,8 +1571,13 @@ class Runner:
         if kind == "login-shell":
             shell, user = step.argv[1], pwd.getpwuid(os.getuid()).pw_name
             listed = Path("/etc/shells").read_text().split() if Path("/etc/shells").is_file() else []
-            if not os.access(shell, os.X_OK) or shell not in listed:
+            # the same shell may be listed by another path (/bin/bash vs /usr/bin/bash)
+            same = [x for x in listed if os.access(x, os.X_OK) and os.path.realpath(x) == os.path.realpath(shell)]
+            if not os.access(shell, os.X_OK) or not same:
                 return False, f"{shell} isn't an installed login shell here"
+            shell = shell if shell in same else same[0]
+            if os.path.realpath(pwd.getpwuid(os.getuid()).pw_shell) == os.path.realpath(shell):
+                return True, "already the login shell"
             rc, _ = self._exec(["usermod", "-s", shell, user], root=True)
             if rc == 0:
                 self.log(f"  {user}'s login shell is now {shell} (applies to new terminals/logins)")
