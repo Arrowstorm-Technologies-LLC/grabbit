@@ -134,7 +134,11 @@ settings, skills, plugins, project memory and history (`~/.claude.json`,
 `~/.claude/...`), and KMail's accounts (Akonadi resource configs, identities,
 transports) with their passwords, read from KWallet when the bundle is written
 and written straight back into KWallet on restore, so KMail's own password
-prompt is never needed. On restore, gh is signed back in with the token (into the
+prompt is never needed. Also carried: the Railway CLI (login, the CLI itself and
+its PATH snippet), the Stripe, Grok and Copilot CLI logins, the adb key (paired
+phones/headsets stay authorized) and `~/.bashrc` / `~/.bash_profile`, which put
+those tools on PATH. A restored file never silently replaces a different one
+already on the new machine: that one is kept as `<file>.pre-grabbit`. On restore, gh is signed back in with the token (into the
 keyring when there is one) and the token file is deleted; paths naming the old
 `$HOME` are rewritten, so a different username on the new machine is fine.
 A bundle holding sign-ins is written `0700`: treat it like a password.

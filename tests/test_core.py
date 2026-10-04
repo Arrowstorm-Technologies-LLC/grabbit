@@ -437,6 +437,27 @@ class BundleTests(unittest.TestCase):
             self.assertEqual((new / ".ssh").stat().st_mode & 0o777, 0o700)
             self.assertEqual((new / ".config/grabbit/gh-token").read_text(), "gho_test\n")
 
+    def test_restore_keeps_the_new_systems_own_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "old").mkdir(); (tmp / "new").mkdir()
+            (tmp / "old/.bashrc").write_text("export PATH=$HOME/.railway/bin:$PATH\n")
+            (tmp / "new/.bashrc").write_text("# CachyOS default\n")
+            saved = core.HOME
+            try:
+                core.HOME = tmp / "old"
+                m = core.Manifest(header={"ORIG_HOME": str(tmp / "old")},
+                                  files=[f for f in core.capture_accounts() if f.dest == "~/.bashrc"])
+                d = core.extract_bundle(core.build_bundle(m, tmp / "b.grab.run", log=lambda _: None), tmp / "x")
+                core.HOME = tmp / "new"
+                r = core.Runner([core.Step("r", ["restore-files"], items=m.files)], core.Sudo(), bundle_dir=str(d),
+                                log=lambda _: None)
+                r._run()
+            finally:
+                core.HOME = saved
+            self.assertEqual((tmp / "new/.bashrc").read_text(), "export PATH=$HOME/.railway/bin:$PATH\n")
+            self.assertEqual((tmp / "new/.bashrc.pre-grabbit").read_text(), "# CachyOS default\n")
+
     def test_stub_ends_with_marker(self):
         self.assertTrue((ROOT / "grabbit-bundle-stub.sh").read_text().rstrip().endswith(core.PAYLOAD_MARKER))
 

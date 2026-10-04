@@ -593,7 +593,9 @@ def capture_files(pm):
 
 # ──────────────────────────────────────────────────────────── accounts ───
 # Signed-in tools whose login lives in $HOME: git + GitHub CLI + SSH keys,
-# Claude Code, and KMail (Akonadi accounts + their KWallet passwords). All of it is a credential or carries one, so a bundle holding
+# Claude Code, KMail (Akonadi accounts + their KWallet passwords), the Railway,
+# Stripe, Grok and Copilot CLIs, the adb key (paired devices stay authorized),
+# plus the bash startup files that put those CLIs on PATH. All of it is a credential or carries one, so a bundle holding
 # any of it is written 0700. Their keys start with ACCOUNT_KEY.
 ACCOUNT_KEY = "acct_"
 ACCOUNT_PATHS = (
@@ -604,6 +606,10 @@ ACCOUNT_PATHS = (
     "~/.claude/projects", "~/.claude/history.jsonl",
     "~/.config/kmail2rc", "~/.config/emailidentities", "~/.config/mailtransports", "~/.config/akonadi",
     "~/.config/akonadi_*_resource_*rc", "~/.local/share/local-mail",
+    "~/.railway/config.json", "~/.railway/env", "~/.railway/env.fish", "~/.railway/bin",
+    "~/.config/stripe", "~/.grok/auth.json", "~/.grok/config.toml", "~/.grok/agent_id", "~/.grok/skills",
+    "~/.copilot/config.json", "~/.android/adbkey", "~/.android/adbkey.pub",
+    "~/.bashrc", "~/.bash_profile",
 )
 # gh keeps its token in the system keyring, not in ~/.config/gh: it is read with
 # `gh auth token` when the bundle is written and signed back in on restore.
@@ -613,7 +619,8 @@ GH_TOKEN_DEST = "~/.config/grabbit/gh-token"
 # prompt, which drops it in kdepim-runtime 26.08.1).
 KMAIL_WALLET_DEST = "~/.config/grabbit/kmail-wallet.json"
 # Restored text files that name the old $HOME by absolute path (rewritten to the new one).
-REWRITE_HOME = ("~/.config/akonadi/akonadiserverrc", "~/.config/akonadi_*rc", "~/.config/kmail2rc",
+REWRITE_HOME = ("~/.config/akonadi/akonadiserverrc", "~/.railway/env", "~/.railway/env.fish",
+                "~/.railway/config.json", "~/.bashrc", "~/.bash_profile", "~/.grok/config.toml", "~/.config/akonadi_*rc", "~/.config/kmail2rc",
                 "~/.config/emailidentities", "~/.config/mailtransports",
                 "~/.gitconfig", "~/.ssh/config", "~/.claude.json", "~/.claude/settings.json",
                 "~/.claude/settings.local.json", "~/.claude/history.jsonl", "~/.claude/plugins/*.json",
@@ -677,6 +684,18 @@ def capture_accounts():
                                                                "akonadi_imap" in f.dest for f in out):
         out.append(LooseFile("file", 0o600, 256, ACCOUNT_KEY + "kmail-wallet", KMAIL_WALLET_DEST))
     return out
+
+
+def keep_original(dest, incoming):
+    """Before a restored file replaces a different one already here (the new OS's own
+    ~/.bashrc, ...), save it as <dest>.pre-grabbit."""
+    if not os.path.isfile(dest) or os.path.islink(dest) or not os.path.isfile(incoming):
+        return
+    try:
+        if Path(dest).read_bytes() != Path(incoming).read_bytes() and not os.path.exists(dest + ".pre-grabbit"):
+            shutil.copy2(dest, dest + ".pre-grabbit")
+    except OSError:
+        pass
 
 
 def claude_project_name(path):
@@ -1611,6 +1630,7 @@ class Runner:
                               self._exec(["cp", "-a", "--no-preserve=ownership", "-T", src, dest], root=True)[0] == 0)
                     else:
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        keep_original(dest, src)
                         if f.kind == "dir":
                             shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
                         else:
