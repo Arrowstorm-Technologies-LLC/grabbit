@@ -320,6 +320,19 @@ grabbit is for moving *your* machine, not for managing a fleet.
   home directory, or the parts you want, separately.
 - **Names are taken as-is:** a package called something different on the target
   distro needs editing in the file (or shows up as *unavailable*).
+- **What the target already has wins.** Before installing, grabbit unticks a
+  package (the reason shows under *Will install via*; re-tick to override) when:
+  - it's already installed, or provided by an installed package (Arch: `pacman -T`);
+  - it declares a conflict with something installed (repo or AUR metadata), e.g.
+    `pulseaudio` vs `pipewire-pulse`. Under `--noconfirm`, pacman would refuse it anyway;
+  - it does the same job as an installed package without declaring a conflict.
+    That covers firewalls (`firewalld` vs `ufw`, which CachyOS enables) and display
+    managers. The table is `ROLE_GROUPS` in `grabbit_core.py`;
+  - it's a Homebrew, pipx or pip copy of something the system package manager
+    supplies here, or that the bundle installs natively.
+
+  A service follows its package, so an unticked `firewalld` also leaves
+  `firewalld.service` disabled. `grabbit load` (CLI) skips the same cases.
 - **AUR packages only restore on Arch-based systems.**
 - **Homebrew on Linux** installs to `/home/linuxbrew`. grabbit adds its
   `shellenv` line for bash, zsh and fish.

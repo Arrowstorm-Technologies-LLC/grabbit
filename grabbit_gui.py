@@ -228,7 +228,7 @@ class GrabbitGUI:
         self.tree.column("name", width=400, minwidth=160, stretch=True)
         self.tree.column("source", width=90, minwidth=70, stretch=False)
         self.tree.column("category", width=100, minwidth=70, stretch=False)
-        self.tree.column("via", width=130, minwidth=80, stretch=False)
+        self.tree.column("via", width=320, minwidth=80, stretch=False)
 
         vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(list_frame, orient="horizontal", command=self.tree.xview)
@@ -447,17 +447,21 @@ class GrabbitGUI:
                 msg = self._ui_queue.get_nowait()
                 if msg[0] == "resolved":
                     _, m, logs = msg
-                    via = {p.key: p.via for p in m.packages}
-                    n_unavail = 0
+                    res = {p.key: p for p in m.packages}
+                    n_unavail = n_here = 0
                     for p in self.packages:
-                        p["via"] = via.get(f"{p['name']}:{p['src']}", "")
+                        r = res.get(f"{p['name']}:{p['src']}")
+                        p["via"], p["note"] = (r.via, r.note) if r else ("", "")
                         if p["via"] == "unavailable":
                             p["selected"] = False
                             n_unavail += 1
+                        elif p["note"]:      # already here / conflicts / same role: untick, user may re-tick
+                            p["selected"] = False
+                            n_here += 1
                     self.refresh_tree()
                     note = f" AUR lookup problem: {logs[0]}" if logs else ""
-                    self.status_var.set(f"Availability checked: {n_unavail} package(s) not available here "
-                                        f"(unticked).{note}")
+                    self.status_var.set(f"Availability checked: {n_unavail} not available here, {n_here} already "
+                                        f"covered or conflicting (both unticked; see 'Will install via').{note}")
                     return
         except queue.Empty:
             pass
@@ -612,7 +616,7 @@ class GrabbitGUI:
                 p["name"],
                 p["src"],
                 CATEGORY_LABELS.get(p.get("category", "user"), p.get("category", "")),
-                p.get("via", ""),
+                p.get("via", "") + (f"  ({p['note']})" if p.get("note") else ""),
             ), tags=(p["name"], p["src"]))
 
         self.status_var.set(f"Showing {len(filtered)} / {len(self.packages)} packages")

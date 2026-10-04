@@ -99,6 +99,61 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(any("repo packages" in s.label for s in steps))
 
 
+FAKE_PACMAN = r'''#!/usr/bin/env python3
+import sys
+installed = {"ufw", "jack2", "code", "eza", "python-fastapi", "neovim"}
+provided = installed | {"nvim-wrapper"}          # neovim provides nvim-wrapper
+sync = {"firewalld": [], "vim": [], "ufw": [], "pipewire-jack": ["jack2"], "nvim-wrapper": []}
+a = sys.argv[1:]
+if a == ["-Qq"]: print("\n".join(sorted(installed)))
+elif a == ["-Slq"]: print("\n".join(sync))
+elif a[0] == "-T": print("\n".join(x for x in a[1:] if x not in provided)); sys.exit(127 if any(x not in provided for x in a[1:]) else 0)
+elif a[0] == "-Si":
+    for n in a[1:]:
+        if n in sync:
+            print(f"Repository      : extra\nName            : {n}\nProvides        : None\n"
+                  f"Conflicts With  : {' '.join(sync[n]) or 'None'}\n")
+'''
+
+
+class TargetConflictTests(unittest.TestCase):
+    def test_already_there_conflicting_and_same_role_start_unticked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "pacman"
+            fake.write_text(FAKE_PACMAN)
+            fake.chmod(0o755)
+            old_path, old_aur = os.environ["PATH"], core.aur_lookup
+            os.environ["PATH"] = f"{tmp}:{old_path}"
+            core.aur_lookup = lambda names, log=print: {"visual-studio-code-bin": {"Conflicts": ["code"]}}
+            try:
+                m = core.Manifest(packages=[
+                    core.Package("firewalld", "pacman"), core.Package("vim", "pacman"),
+                    core.Package("ufw", "pacman"), core.Package("pipewire-jack", "pacman"),
+                    core.Package("visual-studio-code-bin", "aur"), core.Package("nvim-wrapper", "pacman"),
+                    core.Package("eza", "brew"), core.Package("fastapi", "pip"), core.Package("rare", "pip"),
+                    core.Package("vim", "brew")])
+                core.resolve(m, "arch", "pacman", log=lambda _: None)
+            finally:
+                os.environ["PATH"], core.aur_lookup = old_path, old_aur
+            got = {p.key: (p.selected, p.note) for p in m.packages}
+            self.assertEqual(got["firewalld:pacman"], (False, "this system's firewall is ufw"))
+            self.assertEqual(got["vim:pacman"], (True, ""))
+            self.assertEqual(got["ufw:pacman"], (False, "already installed"))
+            self.assertEqual(got["pipewire-jack:pacman"], (False, "conflicts with installed jack2"))
+            self.assertEqual(got["visual-studio-code-bin:aur"], (False, "conflicts with installed code"))
+            self.assertEqual(got["nvim-wrapper:pacman"], (False, "already provided by an installed package"))
+            self.assertEqual(got["eza:brew"], (False, "already installed by pacman"))
+            self.assertEqual(got["fastapi:pip"], (False, "already installed by pacman"))
+            self.assertEqual(got["rare:pip"], (True, ""))
+            self.assertEqual(got["vim:brew"], (False, "the bundle installs vim natively"))
+
+    def test_unticked_package_takes_its_service_along(self):
+        m = core.Manifest(packages=[core.Package("firewalld", "pacman", "user", False, "repo")],
+                          services=[core.Service("firewalld.service", "system", "firewalld")])
+        steps = core.plan(m, "arch", "pacman", update_first=False)
+        self.assertFalse(any("firewalld.service" in s.argv for s in steps))
+
+
 class BundleTests(unittest.TestCase):
     def test_build_read_extract_restore(self):
         with tempfile.TemporaryDirectory() as tmp:

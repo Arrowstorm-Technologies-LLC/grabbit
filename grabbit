@@ -1061,6 +1061,33 @@ do_load() {
     fi
   fi
 
+  # Same job, no declared conflict (both would be enabled and fight): keep the target's.
+  _target_skip_reason() {
+    local pkg="$1" src="$2" low="${1,,}" r
+    if [[ "$PM" == pacman && "$src" != brew && "$src" != pip && "$src" != pipx ]] \
+       && ! pacman -Q "$pkg" &>/dev/null && pacman -T "$pkg" &>/dev/null; then
+      echo "already provided by an installed package"; return 0
+    fi
+    for r in "firewall:firewalld ufw" "display manager:sddm gdm lightdm lxdm ly greetd plasma-login-manager"; do
+      local role="${r%%:*}" members=" ${r#*:} " m
+      [[ "$members" == *" $pkg "* ]] || continue
+      for m in ${r#*:}; do
+        [[ "$m" != "$pkg" ]] && command -v pacman >/dev/null && pacman -Q "$m" &>/dev/null \
+          && { echo "this system's $role is $m"; return 0; }
+        [[ "$m" != "$pkg" ]] && command -v dpkg >/dev/null && dpkg -s "$m" &>/dev/null \
+          && { echo "this system's $role is $m"; return 0; }
+      done
+    done
+    case "$src" in
+      brew|pipx)
+        [[ -e "/usr/bin/$pkg" ]] && { echo "/usr/bin/$pkg already exists"; return 0; } ;;
+      pip)
+        if [[ "$PM" == pacman ]] && pacman -T "python-$low" &>/dev/null; then echo "python-$low is installed"; return 0; fi
+        if command -v dpkg >/dev/null && dpkg -s "python3-$low" &>/dev/null; then echo "python3-$low is installed"; return 0; fi ;;
+    esac
+    return 1
+  }
+
   step "Installing packages (transposing commands as needed)"
 
   local installed=0 failed=0
@@ -1077,6 +1104,9 @@ do_load() {
       zypper) if rpm -q "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
       apk)    if apk info -e "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi ;;
     esac
+    # provided by another installed package, same role as an installed one,
+    # or a brew/pip copy of something the system package manager has here
+    if reason=$(_target_skip_reason "$pkg" "$src"); then info "Skipping $pkg: $reason"; continue; fi
     # also check snap/flatpak
     if [[ "$src" == "snap" ]] && command -v snap >/dev/null && snap list "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi
     if [[ "$src" == "flatpak" ]] && command -v flatpak >/dev/null && flatpak info "$pkg" &>/dev/null; then info "Already installed: $pkg"; continue; fi

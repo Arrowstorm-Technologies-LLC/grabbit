@@ -65,6 +65,7 @@ class Package:
     category: str = "user"
     selected: bool = True
     via: str = ""          # resolved on the target: repo|aur|brew|flatpak|...|unavailable
+    note: str = ""         # why it starts unticked on the target (already there, conflict, ...)
 
     @property
     def key(self):
@@ -691,14 +692,14 @@ def _http_get(url, timeout=30):
 
 
 def aur_lookup(names, log=print):
-    """Names that exist on the AUR (batched RPC, 150 per request)."""
-    found = set()
+    """{name: RPC info} for names that exist on the AUR (batched RPC, 150 per request)."""
+    found = {}
     names = sorted(set(names))
     for i in range(0, len(names), 150):
         chunk = names[i:i + 150]
         url = "https://aur.archlinux.org/rpc/v5/info?" + urllib.parse.urlencode([("arg[]", n) for n in chunk])
         try:
-            found.update(x["Name"] for x in json.loads(_http_get(url)).get("results", []))
+            found.update((x["Name"], x) for x in json.loads(_http_get(url)).get("results", []))
         except Exception as e:  # network down: report and treat as unknown
             log(f"AUR lookup failed: {e}")
             return None
@@ -717,7 +718,7 @@ def resolve(manifest, family, pm, log=print):
             return manifest
         need_aur = [p.name for p in manifest.packages
                     if p.src in ("pacman", "aur", "apt", "dnf", "zypper", "apk") and p.name not in sync]
-        aur = aur_lookup(need_aur, log) if need_aur else set()
+        aur = aur_lookup(need_aur, log) if need_aur else {}
         for p in manifest.packages:
             if p.src in ("brew", "flatpak", "snap", "pipx", "pip"):
                 p.via = p.src
@@ -738,7 +739,113 @@ def resolve(manifest, family, pm, log=print):
     for p in manifest.packages:
         if p.via == "unavailable":
             p.selected = False
+    try:
+        if pm == "pacman":
+            check_pacman_target(manifest, aur or {})
+        check_cross_manager(manifest, pm)
+    except OSError as e:   # a check that can't run leaves the choice to the user
+        log(f"Could not check what this system already has: {e}")
     return manifest
+
+
+# ──────────────────────────────────────────────── target-side conflicts ───
+# Packages that do the same job without declaring a conflict, so pacman installs
+# both and their services fight (both firewalls load nftables rules at boot;
+# a second display manager's service can't take display-manager.service).
+# If the target already has one, the bundle's other one starts unticked.
+ROLE_GROUPS = {
+    "firewall": {"firewalld", "ufw"},
+    "display manager": {"sddm", "gdm", "lightdm", "lxdm", "ly", "greetd", "plasma-login-manager"},
+}
+
+
+def pacman_satisfied(specs):
+    """The specs (names, provides, versioned deps) installed packages already meet."""
+    specs = sorted(set(specs))
+    unmet = set()
+    for i in range(0, len(specs), 200):
+        unmet.update(lines(["pacman", "-T"] + specs[i:i + 200]))
+    return set(specs) - unmet
+
+
+def pacman_sync_info(names):
+    """{name: {"Conflicts With": [...], "Provides": [...]}} from the sync databases."""
+    info, cur, key = {}, None, None
+    out = run(["pacman", "-Si"] + sorted(set(names)), env=dict(os.environ, LC_ALL="C")) if names else ""
+    for l in out.splitlines():
+        if not l.strip():
+            cur = key = None
+            continue
+        if l[:1].isspace() and cur is not None and key:      # wrapped value
+            cur[key] += l.split()
+            continue
+        k, _, v = l.partition(":")
+        k = k.strip()
+        if k == "Name":
+            cur = info.setdefault(v.strip(), {}) if v.strip() not in info else None   # first repo wins
+            key = None
+        elif cur is not None and k in ("Conflicts With", "Provides"):
+            key = k
+            cur[k] = [] if v.strip() == "None" else v.split()
+        else:
+            key = None
+    return info
+
+
+def check_pacman_target(manifest, aur_info):
+    """Untick repo/AUR packages this machine already has (by name or provides), that
+    conflict with something installed, or whose role an installed package fills."""
+    installed = set(lines(["pacman", "-Qq"]))
+    native = [p for p in manifest.packages if p.via in ("repo", "aur", "aur?")]
+    todo = [p.name for p in native if p.name not in installed]
+    provided = pacman_satisfied(todo)
+    meta = pacman_sync_info([p.name for p in native if p.via == "repo" and p.name not in installed])
+    for name, x in aur_info.items():
+        meta.setdefault(name, {"Conflicts With": x.get("Conflicts") or [], "Provides": x.get("Provides") or []})
+    met = pacman_satisfied({c for m in meta.values() for c in m.get("Conflicts With", [])})
+    role_of = {pkg: role for role, pkgs in ROLE_GROUPS.items() for pkg in pkgs}
+    for p in native:
+        hits = [c for c in meta.get(p.name, {}).get("Conflicts With", []) if c in met]
+        rivals = sorted(x for x in ROLE_GROUPS.get(role_of.get(p.name), ()) if x in installed and x != p.name)
+        if p.name in installed:
+            p.note = "already installed"
+        elif p.name in provided:
+            p.note = "already provided by an installed package"
+        elif hits:
+            p.note = "conflicts with installed " + ", ".join(hits)
+        elif rivals:
+            p.note = f"this system's {role_of[p.name]} is {', '.join(rivals)}"
+        if p.note:
+            p.selected = False
+
+
+def native_installed(name, pm):
+    if pm == "pacman":
+        return bool(pacman_satisfied([name]))
+    argv = {"apt": ["dpkg", "-s"], "dnf": ["rpm", "-q"], "zypper": ["rpm", "-q"], "apk": ["apk", "info", "-e"]}.get(pm)
+    return bool(argv) and subprocess.run(argv + [name], capture_output=True, check=False).returncode == 0
+
+
+def check_cross_manager(manifest, pm):
+    """A brew/pipx/pip package the system package manager already supplies here (or that the
+    bundle installs natively too) would be a second copy, shadowing the first on PATH."""
+    native = {p.name for p in manifest.packages if p.selected and p.via in ("repo", "aur", "aur?")}
+    for p in manifest.packages:
+        if p.via not in ("brew", "pipx", "pip") or p.note:
+            continue
+        low = p.name.lower()
+        if p.via == "pip":
+            names = [f"python-{low}", f"python3-{low}"]
+        else:
+            names = [p.name, f"python-{low}"] if p.via == "pipx" else [p.name]
+        if any(n in native for n in names):
+            p.note = f"the bundle installs {next(n for n in names if n in native)} natively"
+        elif any(native_installed(n, pm) for n in names):
+            p.note = "already installed by " + pm
+        elif p.via in ("brew", "pipx") and os.path.exists(f"/usr/bin/{p.name}"):
+            p.note = f"/usr/bin/{p.name} already exists"
+        if p.note:
+            p.selected = False
 
 
 # ──────────────────────────────────────────────────────────────── plan ───
