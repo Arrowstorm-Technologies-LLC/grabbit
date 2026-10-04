@@ -73,7 +73,7 @@ echo "[8/8] Desktop environment filtering present..."
 grep -q -- '-de)' "$GRABBIT"
 grep -q 'filter_de_packages' "$GRABBIT"
 grep -q '_build_de_package_list' "$GRABBIT"
-grep -q '"desktop"' "$SCRIPT_DIR/grabbit_gui.py"
+grep -q '"de": "Desktop environment"' "$SCRIPT_DIR/grabbit_gui.py"
 echo "  OK"
 
 echo "[9/9] Migration bundle core (tests/test_core.py)..."

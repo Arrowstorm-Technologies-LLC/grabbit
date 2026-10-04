@@ -32,14 +32,19 @@ grabbit-gui                          # audit / pick / install in a window
 - **Only what you installed:** `apt-mark showmanual`, `pacman -Qen`/`-Qem`, dnf
   user-installed and so on, rather than the whole base system. Every package
   keeps its original source.
-- **Categories:** each package is tagged *yours* (installed by you after setup),
-  *came with old OS* (the old installer's choices: network manager, firewall,
-  audio, ...), *hardware* (drivers/microcode for a GPU or CPU vendor), *desktop*
-  (KDE, GNOME, X11 and so on), *system* (kernel, bootloader, base) or
-  *old distro* (EndeavourOS or Manjaro branding and tools), so you can decide per
-  group what comes back. *Yours* vs *came with old OS* comes from the package
-  logs (`pacman.log`, `dpkg.log`) compared with when the OS installer finished;
-  where those can't tell, name patterns decide as before.
+- **Categories:** each package is tagged with one of four, so you can decide per
+  group what comes back:
+  - *Installed by you*: added after the OS was set up.
+  - *Desktop environment*: KDE, GNOME, X11 and similar parts you added.
+  - *Drivers & firmware*: drivers and microcode for a GPU or CPU vendor.
+  - *Came with the OS*: the old installer's choices (network manager, firewall,
+    audio, ...), the kernel, bootloader and base, and the distro's own tools and
+    branding.
+
+  *Installed by you* vs *Came with the OS* comes from the package logs
+  (`pacman.log`, `dpkg.log`) compared with when the OS installer finished; where
+  those can't tell, name patterns decide. Older `.grab` files' *system*,
+  *old distro* and *came with old OS* tags all read as *Came with the OS*.
 - **Review before you pack:** a GUI scan shows everything a bundle would carry
   (packages, loose programs, services, groups) with sizes; only what you leave
   ticked is exported.
@@ -153,13 +158,12 @@ downloads drop that bit. Alternatively, skip this and run `bash my-pc.grab.run`.
 
 What starts ticked:
 
-- **Unticked by default:** *came with old OS*, *system* (the old kernel,
-  bootloader and base) and *old distro* packages. The new install makes its own
+- **Unticked by default:** *Came with the OS*. The new install makes its own
   choices there, and putting e.g. EndeavourOS's `grub`/`dracut` or its firewall
   on a CachyOS box would do harm.
-- **Hardware:** the bundle records the old GPU/CPU vendor. Drivers and microcode
-  for hardware the new machine doesn't have start unticked; on CachyOS, GPU
-  drivers are left to its own `chwd`.
+- **Drivers & firmware:** the bundle records the old GPU/CPU vendor. Drivers and
+  microcode for hardware the new machine doesn't have start unticked; on CachyOS,
+  GPU drivers are left to its own `chwd`.
 - **Also unticked:** packages marked *unavailable*, which this machine can't get
   from its repos or the AUR.
 - **Follows its package:** a service whose package you untick is left out too.

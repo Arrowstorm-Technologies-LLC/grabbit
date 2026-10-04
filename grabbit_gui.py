@@ -52,8 +52,12 @@ def tick_state(flags):
     return f"{sum(flags)}/{len(flags)}"
 
 
-CATEGORY_LABELS = {"user": "yours", "default": "came with old OS", "hardware": "hardware", "de": "desktop",
-                   "system": "system", "distro": "old distro"}
+CATEGORY_LABELS = {"user": "Installed by you", "de": "Desktop environment", "hardware": "Drivers & firmware",
+                   "os": "Came with the OS"}
+CATEGORY_LEGEND = ("Installed by you: added after the OS was set up.  Desktop environment: KDE/GNOME parts you "
+                   "added.  Drivers & firmware: for a GPU/CPU vendor; unticked on a machine without it.  "
+                   "Came with the OS: the old install's base, kernel, boot and distro tools; the new OS brings "
+                   "its own, so these start unticked when restoring.")
 
 class GrabbitGUI:
     def __init__(self, root):
@@ -173,10 +177,12 @@ class GrabbitGUI:
             var.trace_add("write", lambda *args: self.apply_filters())
             self.category_vars[cat] = var
             ttk.Checkbutton(cat_frame, text=CATEGORY_LABELS[cat], variable=var).pack(side=tk.LEFT, padx=2)
+        ttk.Label(filter_frame, text=CATEGORY_LEGEND, foreground="#555", wraplength=1100, justify=tk.LEFT).grid(
+            row=2, column=0, columnspan=14, pady=(4, 0), sticky=tk.W)
 
         # Buttons row
         btn_frame = ttk.Frame(filter_frame)
-        btn_frame.grid(row=2, column=0, columnspan=14, pady=(10, 0), sticky=tk.W)
+        btn_frame.grid(row=3, column=0, columnspan=14, pady=(10, 0), sticky=tk.W)
 
         ttk.Button(btn_frame, text="Select All Visible", command=self.select_all_visible).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="Deselect All Visible", command=self.deselect_all_visible).pack(side=tk.LEFT, padx=2)
@@ -236,7 +242,7 @@ class GrabbitGUI:
         self.tree.column("selected", width=155, minwidth=120, anchor=tk.CENTER, stretch=False)
         self.tree.column("name", width=400, minwidth=160, stretch=True)
         self.tree.column("source", width=105, minwidth=80, stretch=False)
-        self.tree.column("category", width=175, minwidth=110, stretch=False)
+        self.tree.column("category", width=210, minwidth=130, stretch=False)
         self.tree.column("via", width=320, minwidth=80, stretch=False)
 
         vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)

@@ -22,8 +22,8 @@ def sample():
     return core.Manifest(
         header={"ORIG_DISTRO": "endeavouros", "ORIG_FAMILY": "arch", "ORIG_PM": "pacman",
                 "ORIG_HOME": "/home/olduser"},
-        packages=[core.Package("firefox", "pacman", "user"), core.Package("paru", "pacman", "distro"),
-                  core.Package("grub", "pacman", "system"), core.Package("kate", "pacman", "de"),
+        packages=[core.Package("firefox", "pacman", "user"), core.Package("paru", "pacman", "os"),
+                  core.Package("grub", "pacman", "os"), core.Package("kate", "pacman", "de"),
                   core.Package("brave-bin", "aur", "user"), core.Package("org.gimp.GIMP", "flatpak", "user")],
         services=[core.Service("docker.service", "system", "docker")],
         groups=["docker"],
@@ -44,6 +44,14 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(m.groups, ["docker"])
         self.assertEqual(m.files[1].target, "~/.local/bin/tool")
         self.assertEqual(m.header["ORIG_HOME"], "/home/olduser")
+
+    def test_old_category_names_map_to_os(self):
+        text = ("PKG_LIST_START\nPKG a:pacman\nPKG b:pacman\nPKG c:pacman\nPKG d:pacman\nPKG_LIST_END\n"
+                "CAT_LIST_START\nCAT a:pacman\tdefault\nCAT b:pacman\tsystem\nCAT c:pacman\tdistro\n"
+                "CAT d:pacman\tde\nCAT_LIST_END\n")
+        m = core.loads(text)
+        self.assertEqual([(p.category, p.selected) for p in m.packages],
+                         [("os", False), ("os", False), ("os", False), ("de", True)])
 
     def test_v1_file_still_reads(self):
         m = core.loads((ROOT / "examples/cross-distro.grab").read_text())

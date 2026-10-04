@@ -51,14 +51,17 @@ APP_FILES = ("grabbit", "grabbit-gui", "grabbit_gui.py", "grabbit_core.py",
 PAYLOAD_MARKER = "__GRABBIT_PAYLOAD_BELOW__"
 # Package names end up on command lines; anything else in a .grab file is refused.
 NAME_RE = re.compile(r"^[A-Za-z0-9@._+/-]+$")
-CATEGORIES = ("user", "default", "hardware", "de", "system", "distro")
-# Preselected on restore. user = installed by you after setup; default = the old OS
-# installer's own choices (network manager, firewall, audio, ...: the new install
-# brings its own); hardware = drivers/microcode for a GPU or CPU vendor (unticked
-# when the new machine lacks it); system = the old kernel/bootloader/base;
-# distro = the old distro's own packages (branding, tools).
-DEFAULT_SELECTED = {"user": True, "default": False, "hardware": True, "de": True,
-                    "system": False, "distro": False}
+# Package categories (the keys are what .grab files store):
+#   user     = installed by you after the OS was set up
+#   de       = desktop environment parts you added (KDE, GNOME, X11, ...)
+#   hardware = drivers/firmware/microcode for a GPU or CPU vendor
+#   os       = came with the OS: the installer's own choices, kernel/bootloader/base,
+#              and the distro's own tools and branding. The new OS brings its own.
+# DEFAULT_SELECTED is what starts ticked on restore (hardware is unticked anyway
+# when the new machine lacks it).
+CATEGORIES = ("user", "de", "hardware", "os")
+CATEGORY_ALIASES = {"default": "os", "system": "os", "distro": "os"}   # older .grab files
+DEFAULT_SELECTED = {"user": True, "de": True, "hardware": True, "os": False}
 
 
 # ─────────────────────────────────────────────────────────────── model ───
@@ -246,14 +249,14 @@ class Classifier:
         if src in ("brew", "flatpak", "snap", "pipx", "pip"):
             return "user"
         if name in self.base or any(fnmatch.fnmatch(name, p) for p in BASE_PATTERNS.get(self.family, [])):
-            return "system"
+            return "os"
         if any(fnmatch.fnmatch(name, p) for p in DOWNSTREAM_PATTERNS.get(self.distro_id, [])) \
                 or name == self.distro_id:
-            return "distro"
+            return "os"
         if name in self.de or any(fnmatch.fnmatch(name, p) for p in DE_PATTERNS):
             return "de"
         if name in self.downstream:
-            return "distro"
+            return "os"
         return "user"
 
 
@@ -426,7 +429,7 @@ def capture_packages(family, pm, classifier):
         cat = classifier.category(name, src)
         native = src in ("pacman", "aur", "apt")
         if cat in ("user", "de") and added is not None and native and name not in added:
-            cat = "default"         # the old installer chose it; the new one makes its own choice
+            cat = "os"              # the old installer chose it; the new one makes its own choice
         elif cat in ("user", "de") and hardware_of(name):
             cat = "hardware"
         pkgs.append(Package(name, src, cat))
@@ -707,7 +710,8 @@ def loads(text):
                 m.packages.append(Package(name, src))
         elif section == "CAT" and tag == "CAT":
             key, _, cat = rest.partition("\t")
-            cats[key.strip()] = cat.strip() if cat.strip() in CATEGORIES else "user"
+            cat = CATEGORY_ALIASES.get(cat.strip(), cat.strip())
+            cats[key.strip()] = cat if cat in CATEGORIES else "user"
         elif section == "SVC" and tag == "SVC":
             parts = rest.split("\t")
             if len(parts) >= 2 and re.match(r"^[A-Za-z0-9@._:\\-]+$", parts[1]):
