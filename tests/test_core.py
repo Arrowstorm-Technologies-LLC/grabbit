@@ -6,6 +6,7 @@ $HOME. Nothing here installs packages or needs root/network.
     python3 tests/test_core.py
 """
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,59 +100,144 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(any("repo packages" in s.label for s in steps))
 
 
-FAKE_PACMAN = r'''#!/usr/bin/env python3
+FAKE_PACMAN = r"""#!/usr/bin/env python3
 import sys
-installed = {"ufw", "jack2", "code", "eza", "python-fastapi", "neovim"}
+installed = {"ufw", "jack2", "code", "eza", "python-fastapi", "neovim", "plasma-login"}
 provided = installed | {"nvim-wrapper"}          # neovim provides nvim-wrapper
-sync = {"firewalld": [], "vim": [], "ufw": [], "pipewire-jack": ["jack2"], "nvim-wrapper": []}
+sync = {"firewalld": [], "vim": [], "ufw": [], "pipewire-jack": ["jack2"], "nvim-wrapper": [],
+        "jack-tool": [], "libjackfoo": ["jack2"], "jack-gui": [], "sddm": [], "tlp": [],
+        "nvidia-utils": [], "intel-ucode": [], "vulkan-radeon": []}
+deps = {"jack-tool": ["libjackfoo"], "jack-gui": ["pipewire-jack"]}              # jack-tool pulls in a dep that conflicts with jack2
 a = sys.argv[1:]
 if a == ["-Qq"]: print("\n".join(sorted(installed)))
 elif a == ["-Slq"]: print("\n".join(sync))
 elif a[0] == "-T": print("\n".join(x for x in a[1:] if x not in provided)); sys.exit(127 if any(x not in provided for x in a[1:]) else 0)
+elif a[0] == "-Sp":
+    names = a[3:]
+    if any(n not in sync for n in names): sys.exit(1)
+    print("\n".join(sorted(set(names) | {d for n in names for d in deps.get(n, [])})))
 elif a[0] == "-Si":
     for n in a[1:]:
         if n in sync:
             print(f"Repository      : extra\nName            : {n}\nProvides        : None\n"
                   f"Conflicts With  : {' '.join(sync[n]) or 'None'}\n")
-'''
+"""
+FAKE_SYSTEMCTL = r"""#!/usr/bin/env python3
+import sys
+on = {"ufw.service", "systemd-timesyncd.service", "plasmalogin.service"}
+units = {"ntpd.service": "Conflicts=", "firewalld.service": "", "sddm.service": "Alias=display-manager.service",
+         "foo.service": "", "chronyd.service": "Conflicts=systemd-timesyncd.service", "tlp.service": ""}
+a = [x for x in sys.argv[1:] if x != "--user"]
+if a[0] == "is-enabled": print("enabled" if a[1] in on else "disabled")
+elif a[0] == "is-active": print("active" if a[1] in on else "inactive")
+elif a[:3] == ["show", "-P", "LoadState"]: print("loaded" if a[3] in units or a[3] in on else "not-found")
+elif a[:3] == ["show", "-P", "Conflicts"]:
+    print(units.get(a[3], "").removeprefix("Conflicts=") + " shutdown.target" if "Conflicts=" in units.get(a[3], "") else "shutdown.target")
+elif a[0] == "cat": print("[Install]\n" + units.get(a[1], ""))
+"""
+
+
+def fake_bin(tmp, name, code):
+    f = Path(tmp) / name
+    f.write_text(code)
+    f.chmod(0o755)
 
 
 class TargetConflictTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        fake_bin(self.tmp.name, "pacman", FAKE_PACMAN)
+        fake_bin(self.tmp.name, "systemctl", FAKE_SYSTEMCTL)
+        self.saved = (os.environ["PATH"], core.aur_lookup, core.hardware, core.have)
+        os.environ["PATH"] = f"{self.tmp.name}:{os.environ['PATH']}"
+        core.aur_lookup = lambda names, log=print: {"visual-studio-code-bin": {"Conflicts": ["code"]}}
+        core.hardware = lambda: {"gpu": {"amd"}, "cpu": "amd"}
+        core.have = lambda cmd: cmd != "chwd" and shutil.which(cmd) is not None
+
+    def tearDown(self):
+        os.environ["PATH"], core.aur_lookup, core.hardware, core.have = self.saved
+        self.tmp.cleanup()
+
     def test_already_there_conflicting_and_same_role_start_unticked(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "pacman"
-            fake.write_text(FAKE_PACMAN)
-            fake.chmod(0o755)
-            old_path, old_aur = os.environ["PATH"], core.aur_lookup
-            os.environ["PATH"] = f"{tmp}:{old_path}"
-            core.aur_lookup = lambda names, log=print: {"visual-studio-code-bin": {"Conflicts": ["code"]}}
-            try:
-                m = core.Manifest(packages=[
-                    core.Package("firewalld", "pacman"), core.Package("vim", "pacman"),
-                    core.Package("ufw", "pacman"), core.Package("pipewire-jack", "pacman"),
-                    core.Package("visual-studio-code-bin", "aur"), core.Package("nvim-wrapper", "pacman"),
-                    core.Package("eza", "brew"), core.Package("fastapi", "pip"), core.Package("rare", "pip"),
-                    core.Package("vim", "brew")])
-                core.resolve(m, "arch", "pacman", log=lambda _: None)
-            finally:
-                os.environ["PATH"], core.aur_lookup = old_path, old_aur
-            got = {p.key: (p.selected, p.note) for p in m.packages}
-            self.assertEqual(got["firewalld:pacman"], (False, "this system's firewall is ufw"))
-            self.assertEqual(got["vim:pacman"], (True, ""))
-            self.assertEqual(got["ufw:pacman"], (False, "already installed"))
-            self.assertEqual(got["pipewire-jack:pacman"], (False, "conflicts with installed jack2"))
-            self.assertEqual(got["visual-studio-code-bin:aur"], (False, "conflicts with installed code"))
-            self.assertEqual(got["nvim-wrapper:pacman"], (False, "already provided by an installed package"))
-            self.assertEqual(got["eza:brew"], (False, "already installed by pacman"))
-            self.assertEqual(got["fastapi:pip"], (False, "already installed by pacman"))
-            self.assertEqual(got["rare:pip"], (True, ""))
-            self.assertEqual(got["vim:brew"], (False, "the bundle installs vim natively"))
+        m = core.Manifest(packages=[
+            core.Package("firewalld", "pacman"), core.Package("vim", "pacman"),
+            core.Package("ufw", "pacman"), core.Package("pipewire-jack", "pacman"),
+            core.Package("visual-studio-code-bin", "aur"), core.Package("nvim-wrapper", "pacman"),
+            core.Package("jack-tool", "pacman"), core.Package("jack-gui", "pacman"), core.Package("tlp", "pacman"),
+            core.Package("eza", "brew"), core.Package("fastapi", "pip"), core.Package("rare", "pip"),
+            core.Package("vim", "brew"), core.Package("nvidia-utils", "pacman"),
+            core.Package("intel-ucode", "pacman"), core.Package("vulkan-radeon", "pacman")])
+        core.resolve(m, "arch", "pacman", log=lambda _: None)
+        got = {p.key: (p.selected, p.note) for p in m.packages}
+        self.assertEqual(got["firewalld:pacman"], (False, "this system's firewall is ufw"))
+        self.assertEqual(got["vim:pacman"], (True, ""))
+        self.assertEqual(got["ufw:pacman"], (False, "already installed"))
+        self.assertEqual(got["pipewire-jack:pacman"], (False, "conflicts with installed jack2"))
+        self.assertEqual(got["visual-studio-code-bin:aur"], (False, "conflicts with installed code"))
+        self.assertEqual(got["nvim-wrapper:pacman"], (False, "already provided by an installed package"))
+        self.assertEqual(got["jack-tool:pacman"], (False, "needs libjackfoo, which conflicts with installed jack2"))
+        # its dependency is itself a (conflicting) candidate
+        self.assertEqual(got["jack-gui:pacman"], (False, "needs pipewire-jack, which conflicts with installed jack2"))
+        self.assertEqual(got["tlp:pacman"], (True, ""))        # no power-profiles service is on here
+        self.assertEqual(got["eza:brew"], (False, "already installed by pacman"))
+        self.assertEqual(got["fastapi:pip"], (False, "already installed by pacman"))
+        self.assertEqual(got["rare:pip"], (True, ""))
+        self.assertEqual(got["vim:brew"], (False, "the bundle installs vim natively"))
+        self.assertEqual(got["nvidia-utils:pacman"], (False, "for nvidia graphics; this machine has amd"))
+        self.assertEqual(got["intel-ucode:pacman"], (False, "microcode for intel CPUs; this machine's CPU is amd"))
+        self.assertEqual(got["vulkan-radeon:pacman"], (True, ""))
+
+    def test_chwd_owns_gpu_drivers(self):
+        core.have = lambda cmd: True
+        m = core.Manifest(packages=[core.Package("vulkan-radeon", "pacman", "hardware", True, "repo"),
+                                    core.Package("rocm-hip-sdk", "pacman", "hardware", True, "repo")])
+        core.check_hardware(m)
+        self.assertEqual([(p.selected, p.note) for p in m.packages],
+                         [(False, "CachyOS installs GPU drivers itself (chwd)"), (True, "")])
+
+    def test_service_checks(self):
+        self.assertEqual(core.unit_skip_reason("ufw.service"), "already enabled")
+        self.assertEqual(core.unit_skip_reason("missing.service"), "not installed here")
+        self.assertEqual(core.unit_skip_reason("firewalld.service"), "this system's firewall is ufw.service")
+        self.assertEqual(core.unit_skip_reason("chronyd.service"),
+                         "it conflicts with systemd-timesyncd.service, which is on here")
+        self.assertEqual(core.unit_skip_reason("foo.service"), "")
 
     def test_unticked_package_takes_its_service_along(self):
         m = core.Manifest(packages=[core.Package("firewalld", "pacman", "user", False, "repo")],
                           services=[core.Service("firewalld.service", "system", "firewalld")])
         steps = core.plan(m, "arch", "pacman", update_first=False)
-        self.assertFalse(any("firewalld.service" in s.argv for s in steps))
+        self.assertFalse(any("firewalld.service" in s.items for s in steps))
+
+    def test_services_go_through_the_checker(self):
+        m = core.Manifest(packages=[core.Package("docker", "pacman", "user", True, "repo")],
+                          services=[core.Service("docker.service", "system", "docker")])
+        st = next(s for s in core.plan(m, "arch", "pacman", update_first=False) if "services" in s.label)
+        self.assertEqual((st.argv, st.items, st.root), (["enable-units", "system"], ["docker.service"], True))
+
+
+class OriginTests(unittest.TestCase):
+    def test_installer_image_vs_added_later(self):
+        log = ("[2026-02-17T20:34:35-0600] [ALPM] installed grub (2.14-2)\n"
+               "[2026-02-17T21:10:00-0600] [ALPM] installed steam (1.0-1)\n"
+               "[2026-02-17T20:30:00-0600] [ALPM] installed nano (8.0-1)\n"
+               "[2026-03-01T10:00:00-0600] [ALPM] installed nano (8.0-1)\n")   # removed, re-added later
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(log)
+        end = core.datetime.strptime("2026-02-17T20:35:04-0600", "%Y-%m-%dT%H:%M:%S%z").timestamp()
+        try:
+            self.assertEqual(core.pacman_added_after_install(f.name, end), {"steam", "nano"})
+            late = end - 3 * 86400                         # log starts days after "install": rotated
+            self.assertIsNone(core.pacman_added_after_install(f.name, late))
+        finally:
+            os.unlink(f.name)
+
+    def test_dpkg_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "dpkg.log").write_text("2026-01-01 10:00:00 install base-files:amd64 <none> 13\n"
+                                           "2026-01-05 12:00:00 install htop:amd64 <none> 3.3\n")
+            end = core.datetime(2026, 1, 1, 11, 0).timestamp()
+            self.assertEqual(core.apt_added_after_install(d + "/dpkg.log*", end), {"htop"})
 
 
 class BundleTests(unittest.TestCase):

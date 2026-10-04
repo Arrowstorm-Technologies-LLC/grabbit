@@ -51,10 +51,14 @@ APP_FILES = ("grabbit", "grabbit-gui", "grabbit_gui.py", "grabbit_core.py",
 PAYLOAD_MARKER = "__GRABBIT_PAYLOAD_BELOW__"
 # Package names end up on command lines; anything else in a .grab file is refused.
 NAME_RE = re.compile(r"^[A-Za-z0-9@._+/-]+$")
-CATEGORIES = ("user", "de", "system", "distro")
-# Preselected on restore. system = the old machine's kernel/bootloader/base (the new
-# install has its own); distro = the old distro's own packages (branding, tools).
-DEFAULT_SELECTED = {"user": True, "de": True, "system": False, "distro": False}
+CATEGORIES = ("user", "default", "hardware", "de", "system", "distro")
+# Preselected on restore. user = installed by you after setup; default = the old OS
+# installer's own choices (network manager, firewall, audio, ...: the new install
+# brings its own); hardware = drivers/microcode for a GPU or CPU vendor (unticked
+# when the new machine lacks it); system = the old kernel/bootloader/base;
+# distro = the old distro's own packages (branding, tools).
+DEFAULT_SELECTED = {"user": True, "default": False, "hardware": True, "de": True,
+                    "system": False, "distro": False}
 
 
 # ─────────────────────────────────────────────────────────────── model ───
@@ -253,6 +257,124 @@ class Classifier:
         return "user"
 
 
+# ───────────────────────────────────────────────────────────── origin ───
+# Which explicit packages the OS installer put there and which the user added
+# later. A package never logged as installed, or last installed before the
+# installer finished, came with the OS (offline installers copy an image, so
+# nothing is logged for those at all).
+INSTALLER_MARKERS = ("/var/log/Calamares.log", "/var/log/installer", "/var/log/archinstall",
+                     "/var/log/anaconda")
+PACMAN_LOG = "/var/log/pacman.log"
+DPKG_LOGS = "/var/log/dpkg.log*"
+
+
+def installer_end():
+    """When the OS installer finished (epoch seconds), or None if no installer left a log."""
+    for p in INSTALLER_MARKERS:
+        try:
+            return os.stat(p).st_mtime
+        except OSError:
+            pass
+    return None
+
+
+def _last_installs(events, end):
+    """events: (epoch, name) of fresh installs. -> names installed after `end`, or None
+    when the log can't tell (empty, or it starts a day after the install: rotated)."""
+    if not events:
+        return None
+    t0 = min(t for t, _ in events)
+    end = end if end is not None else t0 + 1800      # no installer log: its first half hour
+    if t0 > end + 86400:
+        return None
+    last = {}
+    for t, n in events:
+        last[n] = max(t, last.get(n, 0))
+    return {n for n, t in last.items() if t > end}
+
+
+def pacman_added_after_install(log_path=None, end=None):
+    try:
+        text = Path(log_path or PACMAN_LOG).read_text(errors="replace")
+    except OSError:
+        return None
+    events = []
+    for m in re.finditer(r"^\[([^\]]+)\] \[ALPM\] installed (\S+) ", text, re.M):
+        try:
+            events.append((datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S%z").timestamp(), m.group(2)))
+        except ValueError:
+            pass
+    return _last_installs(events, installer_end() if end is None else end)
+
+
+def apt_added_after_install(log_glob=None, end=None):
+    import glob
+    import gzip
+    events = []
+    for f in glob.glob(log_glob or DPKG_LOGS):
+        try:
+            text = (gzip.open(f, "rt", errors="replace") if f.endswith(".gz") else open(f, errors="replace")).read()
+        except OSError:
+            continue
+        for m in re.finditer(r"^(\S+ \S+) install (\S+?)(?::\S+)? ", text, re.M):
+            try:
+                events.append((datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp(), m.group(2)))
+            except ValueError:
+                pass
+    return _last_installs(events, installer_end() if end is None else end)
+
+
+def added_after_install(pm):
+    """Names the user installed after setup, or None (unknown: fall back to patterns)."""
+    return {"pacman": pacman_added_after_install, "apt": apt_added_after_install}.get(pm, lambda: None)()
+
+
+# ──────────────────────────────────────────────────────────── hardware ───
+# Packages that only make sense with a GPU/CPU vendor present. "driver" ones are
+# what CachyOS's chwd installs for the detected GPU by itself.
+HARDWARE = {
+    ("gpu", "nvidia"): ["nvidia", "nvidia-*", "lib32-nvidia-*", "opencl-nvidia", "cuda", "cuda-*",
+                        "xf86-video-nouveau", "xserver-xorg-video-nouveau", "akmod-nvidia*", "xorg-x11-drv-nvidia*"],
+    ("gpu", "amd"): ["xf86-video-amdgpu", "xf86-video-ati", "vulkan-radeon", "lib32-vulkan-radeon", "amdvlk",
+                     "lib32-amdvlk", "rocm-*", "hip-runtime-amd", "radeontop", "xserver-xorg-video-amdgpu",
+                     "xserver-xorg-video-radeon", "firmware-amd-graphics"],
+    ("gpu", "intel"): ["xf86-video-intel", "vulkan-intel", "lib32-vulkan-intel", "intel-media-driver",
+                       "libva-intel-driver", "intel-compute-runtime", "intel-gpu-tools", "xserver-xorg-video-intel",
+                       "intel-media-va-driver*", "i965-va-driver*"],
+    ("cpu", "amd"): ["amd-ucode", "amd64-microcode"],
+    ("cpu", "intel"): ["intel-ucode", "intel-microcode"],
+}
+GPU_DRIVERS = ["xf86-video-*", "vulkan-radeon", "lib32-vulkan-radeon", "vulkan-intel", "lib32-vulkan-intel",
+               "amdvlk", "lib32-amdvlk", "nvidia", "nvidia-dkms", "nvidia-open*", "nvidia-utils",
+               "lib32-nvidia-utils", "intel-media-driver", "libva-intel-driver"]
+PCI_VENDORS = {"0x10de": "nvidia", "0x1002": "amd", "0x8086": "intel"}
+
+
+def hardware_of(name):
+    """-> (kind, vendor) the package is for, or None."""
+    for key, pats in HARDWARE.items():
+        if any(fnmatch.fnmatch(name, p) for p in pats):
+            return key
+    return None
+
+
+def hardware():
+    """{"gpu": {vendors}, "cpu": vendor} of this machine, from sysfs (no lspci needed)."""
+    gpus = set()
+    for d in Path("/sys/bus/pci/devices").glob("*"):
+        try:
+            if (d / "class").read_text().startswith("0x03"):
+                gpus.add(PCI_VENDORS.get((d / "vendor").read_text().strip(), "other"))
+        except OSError:
+            pass
+    try:
+        info = Path("/proc/cpuinfo").read_text()
+    except OSError:
+        info = ""
+    cpu = "amd" if "AuthenticAMD" in info else "intel" if "GenuineIntel" in info else ""
+    return {"gpu": gpus, "cpu": cpu}
+
+
 # ───────────────────────────────────────────────────────────── capture ───
 def capture_packages(family, pm, classifier):
     found = []
@@ -295,12 +417,19 @@ def capture_packages(family, pm, classifier):
         except ValueError:
             pass
 
+    added = added_after_install(pm)
     seen, pkgs = set(), []
     for name, src in found:
         if (name, src) in seen or not NAME_RE.match(name):
             continue
         seen.add((name, src))
-        pkgs.append(Package(name, src, classifier.category(name, src)))
+        cat = classifier.category(name, src)
+        native = src in ("pacman", "aur", "apt")
+        if cat in ("user", "de") and added is not None and native and name not in added:
+            cat = "default"         # the old installer chose it; the new one makes its own choice
+        elif cat in ("user", "de") and hardware_of(name):
+            cat = "hardware"
+        pkgs.append(Package(name, src, cat))
     return pkgs
 
 
@@ -514,6 +643,8 @@ def capture(log=print, accounts=True):
     log(f"Enabled services from those packages: {len(services)}")
     groups = capture_groups()
     log(f"Groups: {', '.join(groups) or 'none'}")
+    hw = hardware()
+    log(f"Hardware: GPU {', '.join(sorted(hw['gpu'])) or '?'}, CPU {hw['cpu'] or '?'}")
     files = capture_files(pm)
     log(f"Loose files: {len(files)} ({human(sum(f.size for f in files))})")
     if accounts:
@@ -525,6 +656,7 @@ def capture(log=print, accounts=True):
         "ORIG_DISTRO": did, "ORIG_FAMILY": family, "ORIG_PM": pm,
         "ORIG_DISTRO_NAME": f'"{dname}"', "ORIG_HOME": str(HOME),
         "ORIG_USER": pwd.getpwuid(os.getuid()).pw_name,
+        "ORIG_GPU": ",".join(sorted(hw["gpu"])) or "unknown", "ORIG_CPU": hw["cpu"] or "unknown",
     }
     return Manifest(header, pkgs, services, groups, files)
 
@@ -742,6 +874,9 @@ def resolve(manifest, family, pm, log=print):
     try:
         if pm == "pacman":
             check_pacman_target(manifest, aur or {})
+        elif pm == "apt":
+            check_apt_target(manifest)
+        check_hardware(manifest)
         check_cross_manager(manifest, pm)
     except OSError as e:   # a check that can't run leaves the choice to the user
         log(f"Could not check what this system already has: {e}")
@@ -753,10 +888,51 @@ def resolve(manifest, family, pm, log=print):
 # both and their services fight (both firewalls load nftables rules at boot;
 # a second display manager's service can't take display-manager.service).
 # If the target already has one, the bundle's other one starts unticked.
-ROLE_GROUPS = {
-    "firewall": {"firewalld", "ufw"},
-    "display manager": {"sddm", "gdm", "lightdm", "lxdm", "ly", "greetd", "plasma-login-manager"},
+ROLE_GROUPS = {   # role -> {package: its service ("" = none known: installed is enough)}
+    "firewall": {"firewalld": "firewalld.service", "ufw": "ufw.service"},
+    "display manager": {"sddm": "sddm.service", "gdm": "gdm.service", "lightdm": "lightdm.service",
+                        "lxdm": "lxdm.service", "ly": "ly.service", "greetd": "greetd.service",
+                        "plasma-login-manager": ""},
+    "power profiles": {"power-profiles-daemon": "power-profiles-daemon.service", "tlp": "tlp.service",
+                       "auto-cpufreq": "auto-cpufreq.service", "tuned-ppd": "tuned-ppd.service"},
 }
+# Services that do one job: enabling a second one next to an enabled one fights it.
+# (Display managers are caught by their shared display-manager.service alias.)
+SERVICE_ROLES = {
+    "firewall": {"firewalld.service", "ufw.service", "nftables.service", "iptables.service"},
+    "time sync": {"systemd-timesyncd.service", "chronyd.service", "ntpd.service", "openntpd.service"},
+    "network manager": {"NetworkManager.service", "systemd-networkd.service", "connman.service", "wicd.service"},
+    "power profiles": {"power-profiles-daemon.service", "tlp.service", "auto-cpufreq.service", "tuned-ppd.service"},
+}
+
+
+def unit_on(unit, scope="system"):
+    sc = ["systemctl"] + (["--user"] if scope == "user" else [])
+    return (run(sc + ["is-enabled", unit]).strip() in ("enabled", "enabled-runtime")
+            or run(sc + ["is-active", unit]).strip() == "active")
+
+
+def unit_skip_reason(unit, scope="system"):
+    """Why enabling `unit` here would be wrong ("" = go ahead)."""
+    sc = ["systemctl"] + (["--user"] if scope == "user" else [])
+    if run(sc + ["show", "-P", "LoadState", unit]).strip() != "loaded":
+        return "not installed here"
+    if run(sc + ["is-enabled", unit]).strip() in ("enabled", "enabled-runtime"):
+        return "already enabled"
+    for other in run(sc + ["show", "-P", "Conflicts", unit]).split():
+        if other.endswith((".service", ".socket")) and other != unit and unit_on(other, scope):
+            return f"it conflicts with {other}, which is on here"
+    if scope == "system":
+        for alias in re.findall(r"^\s*Alias\s*=\s*(\S+)", run(sc + ["cat", unit]), re.M):
+            link = Path("/etc/systemd/system") / alias
+            if link.is_symlink() and Path(os.path.realpath(link)).name != unit:
+                return f"{alias} is already {Path(os.path.realpath(link)).name}"
+    for role, units in SERVICE_ROLES.items():
+        if unit in units:
+            rivals = sorted(u for u in units if u != unit and unit_on(u, scope))
+            if rivals:
+                return f"this system's {role} is {rivals[0]}"
+    return ""
 
 
 def pacman_satisfied(specs):
@@ -804,17 +980,105 @@ def check_pacman_target(manifest, aur_info):
         meta.setdefault(name, {"Conflicts With": x.get("Conflicts") or [], "Provides": x.get("Provides") or []})
     met = pacman_satisfied({c for m in meta.values() for c in m.get("Conflicts With", [])})
     role_of = {pkg: role for role, pkgs in ROLE_GROUPS.items() for pkg in pkgs}
+    # a dependency the install would pull in can conflict too
+    bad_deps = pacman_conflicting_deps([p for p in native if p.via == "repo" and p.name not in installed],
+                                       installed)
     for p in native:
         hits = [c for c in meta.get(p.name, {}).get("Conflicts With", []) if c in met]
-        rivals = sorted(x for x in ROLE_GROUPS.get(role_of.get(p.name), ()) if x in installed and x != p.name)
+        group = ROLE_GROUPS.get(role_of.get(p.name), {})
+        rivals = sorted(x for x, unit in group.items()
+                        if x != p.name and x in installed and (not unit or unit_on(unit)))
         if p.name in installed:
             p.note = "already installed"
         elif p.name in provided:
             p.note = "already provided by an installed package"
         elif hits:
             p.note = "conflicts with installed " + ", ".join(hits)
+        elif p.name in bad_deps:
+            p.note = bad_deps[p.name]
         elif rivals:
             p.note = f"this system's {role_of[p.name]} is {', '.join(rivals)}"
+        if p.note:
+            p.selected = False
+
+
+def pacman_closure(names):
+    """Every package `pacman -S names` would install (deps included), or None if pacman can't plan it."""
+    out = subprocess.run(["pacman", "-Sp", "--print-format", "%n"] + sorted(names), capture_output=True,
+                         text=True, check=False, env=dict(os.environ, LC_ALL="C"))
+    return set(out.stdout.split()) if out.returncode == 0 else None
+
+
+def pacman_conflicting_deps(pkgs, installed):
+    """{candidate: reason} for repo candidates whose install pulls in a dependency
+    that conflicts with an installed package."""
+    names = [p.name for p in pkgs]
+    if not names:
+        return {}
+    closure = pacman_closure(names)
+    if closure is None:                                   # one bad apple: plan them one by one
+        closure = set().union(*(pacman_closure([n]) or set() for n in names))
+    deps = closure - installed          # candidates too: one may be another's dependency
+    if not deps:
+        return {}
+    meta = pacman_sync_info(deps)
+    met = pacman_satisfied({c for m in meta.values() for c in m.get("Conflicts With", [])})
+    bad = {d: [c for c in m.get("Conflicts With", []) if c in met] for d, m in meta.items()}
+    bad = {d: c for d, c in bad.items() if c}
+    out = {}
+    for n in names if bad else []:
+        for d in sorted(((pacman_closure([n]) or set()) & set(bad)) - {n}):
+            out[n] = f"needs {d}, which conflicts with installed {', '.join(bad[d])}"
+            break
+    return out
+
+
+def apt_simulate(names):
+    """-> (ok, packages the install would remove, last error line) from apt-get -s."""
+    r = subprocess.run(["apt-get", "-s", "install"] + list(names), capture_output=True, text=True,
+                       check=False, env=dict(os.environ, LC_ALL="C"))
+    removes = [l.split()[1] for l in r.stdout.splitlines() if l.startswith("Remv ")]
+    err = (r.stderr.strip().splitlines() or [""])[-1]
+    return r.returncode == 0, removes, err
+
+
+def check_apt_target(manifest):
+    """Untick apt packages that are already installed, can't be installed here, or would
+    make apt remove an installed package (apt-get -y would just do it)."""
+    cands = [p for p in manifest.packages if p.via == "repo" and p.selected]
+    for p in cands:
+        if native_installed(p.name, "apt"):
+            p.note = "already installed"
+    todo = [p for p in cands if not p.note]
+    ok, removes, _ = apt_simulate([p.name for p in todo]) if todo else (True, [], "")
+    if not ok or removes:
+        for p in todo:                                    # find the culprits
+            ok, removes, err = apt_simulate([p.name])
+            if removes:
+                p.note = "would make apt remove installed " + ", ".join(removes[:4])
+            elif not ok:
+                p.note = "apt can't install it here: " + err.removeprefix("E: ")[:120]
+    for p in cands:
+        if p.note:
+            p.selected = False
+
+
+def check_hardware(manifest):
+    """Untick drivers/microcode for hardware this machine lacks; on CachyOS leave GPU
+    drivers to chwd, which installs the right ones for the detected GPU."""
+    hw = hardware()
+    chwd = have("chwd")
+    for p in manifest.packages:
+        need = hardware_of(p.name)
+        if p.note or not need:
+            continue
+        kind, vendor = need
+        if kind == "gpu" and hw["gpu"] and vendor not in hw["gpu"]:
+            p.note = f"for {vendor} graphics; this machine has {', '.join(sorted(hw['gpu']))}"
+        elif kind == "cpu" and hw["cpu"] and vendor != hw["cpu"]:
+            p.note = f"microcode for {vendor} CPUs; this machine's CPU is {hw['cpu']}"
+        elif kind == "gpu" and chwd and any(fnmatch.fnmatch(p.name, g) for g in GPU_DRIVERS):
+            p.note = "CachyOS installs GPU drivers itself (chwd)"
         if p.note:
             p.selected = False
 
@@ -861,9 +1125,14 @@ class Step:
 
 
 BREW = "/home/linuxbrew/.linuxbrew/bin/brew"
+# None of these may remove an installed package to make room: apt-get -y would (so
+# --no-remove makes it abort instead), zypper's non-interactive solver could force a
+# resolution, dnf only removes with --allowerasing (never passed), pacman answers
+# "remove conflicting package?" with its default No under --noconfirm. A refused
+# batch falls back to one-by-one installs, which isolates the culprit.
 INSTALL_FLAGS = {
-    "apt": ["apt-get", "install", "-y"], "dnf": ["dnf", "install", "-y"],
-    "zypper": ["zypper", "--non-interactive", "install"], "apk": ["apk", "add"],
+    "apt": ["apt-get", "install", "-y", "--no-remove"], "dnf": ["dnf", "install", "-y"],
+    "zypper": ["zypper", "--non-interactive", "install", "--no-force-resolution"], "apk": ["apk", "add"],
 }
 
 
@@ -948,14 +1217,13 @@ def plan(manifest, family, pm, bundle_dir=None, update_first=True, orig_home=Non
     svcs = [s for s in manifest.services if s.selected and s.package not in unchosen]
     sys_units = [s.unit for s in svcs if s.scope == "system"]
     usr_units = [s.unit for s in svcs if s.scope == "user"]
+    # each unit is checked on the spot (exists here? conflicts? job already done by another?)
     if sys_units:
-        steps.append(Step(f"Enable {len(sys_units)} system services", ["systemctl", "enable", "--now"] + sys_units,
-                          root=True, items=sys_units, item_argv=lambda u: ["systemctl", "enable", "--now", u],
-                          optional=True))
+        steps.append(Step(f"Enable {len(sys_units)} system services", ["enable-units", "system"],
+                          root=True, items=sys_units, optional=True))
     if usr_units:
-        steps.append(Step(f"Enable {len(usr_units)} user services",
-                          ["systemctl", "--user", "enable", "--now"] + usr_units, items=usr_units,
-                          item_argv=lambda u: ["systemctl", "--user", "enable", "--now", u], optional=True))
+        steps.append(Step(f"Enable {len(usr_units)} user services", ["enable-units", "user"],
+                          items=usr_units, optional=True))
     groups = [g for g in manifest.groups if manifest.group_selected.get(g, True)]
     if groups:
         steps.append(Step(f"Add {user} to groups: {', '.join(groups)}", ["add-groups"], items=groups,
@@ -1122,6 +1390,23 @@ class Runner:
         if kind == "path-setup":
             rc, _ = self._exec(["sh", "-c", PATH_SETUP])
             return rc == 0, ""
+        if kind == "enable-units":
+            scope = step.argv[1]
+            failed, skipped = [], []
+            for unit in step.items:
+                if self.cancelled:
+                    break
+                why = unit_skip_reason(unit, scope)
+                if why:
+                    self.log(f"  skip {unit}: {why}")
+                    skipped.append(f"{unit} ({why})")
+                    continue
+                argv = ["systemctl"] + (["--user"] if scope == "user" else []) + ["enable", "--now", unit]
+                if self._exec(argv, root=scope == "system")[0] != 0:
+                    failed.append(unit)
+            detail = "; ".join(([f"failed: {', '.join(failed)}"] if failed else [])
+                               + ([f"skipped: {', '.join(skipped)}"] if skipped else []))
+            return not failed, detail
         if kind == "gh-login":
             token = expand(GH_TOKEN_DEST)
             if not os.path.isfile(token):

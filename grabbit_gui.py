@@ -46,7 +46,8 @@ except ImportError:
 # Known sources from grabbit
 KNOWN_SOURCES = ["apt", "pacman", "aur", "brew", "snap", "flatpak", "pipx", "pip", "zypper", "dnf", "apk"]
 EXTERNAL_SOURCES = frozenset({"aur", "brew", "snap", "flatpak", "pipx", "pip"})
-CATEGORY_LABELS = {"user": "yours", "de": "desktop", "system": "system", "distro": "old distro"}
+CATEGORY_LABELS = {"user": "yours", "default": "came with old OS", "hardware": "hardware", "de": "desktop",
+                   "system": "system", "distro": "old distro"}
 
 class GrabbitGUI:
     def __init__(self, root):
@@ -793,7 +794,12 @@ class GrabbitGUI:
         for i, st in enumerate(steps, 1):
             who = "as root (sudo)" if st.root else "as you"
             text.insert(tk.END, f"{i}. {st.label}  [{who}]\n")
-            if st.argv[0] in ("restore-files", "add-groups", "path-setup"):
+            if st.argv[0] == "enable-units":
+                text.insert(tk.END, "     each is checked first and skipped if it isn't installed, is already on, "
+                                    "conflicts with an enabled unit, or another enabled service does its job:\n")
+                for it in st.items:
+                    text.insert(tk.END, f"     {it}\n")
+            elif st.argv[0] in ("restore-files", "add-groups", "path-setup"):
                 for it in st.items:
                     text.insert(tk.END, f"     {getattr(it, 'dest', it)}\n")
             elif st.argv[:2] in (["sh", "-c"], ["bash", "-c"]):

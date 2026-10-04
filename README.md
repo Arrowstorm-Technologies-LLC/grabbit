@@ -32,9 +32,14 @@ grabbit-gui                          # audit / pick / install in a window
 - **Only what you installed:** `apt-mark showmanual`, `pacman -Qen`/`-Qem`, dnf
   user-installed and so on, rather than the whole base system. Every package
   keeps its original source.
-- **Categories:** each package is tagged *yours*, *desktop* (KDE, GNOME, X11 and
-  so on), *system* (kernel, bootloader, base) or *old distro* (EndeavourOS or
-  Manjaro branding and tools), so you can decide per group what comes back.
+- **Categories:** each package is tagged *yours* (installed by you after setup),
+  *came with old OS* (the old installer's choices: network manager, firewall,
+  audio, ...), *hardware* (drivers/microcode for a GPU or CPU vendor), *desktop*
+  (KDE, GNOME, X11 and so on), *system* (kernel, bootloader, base) or
+  *old distro* (EndeavourOS or Manjaro branding and tools), so you can decide per
+  group what comes back. *Yours* vs *came with old OS* comes from the package
+  logs (`pacman.log`, `dpkg.log`) compared with when the OS installer finished;
+  where those can't tell, name patterns decide as before.
 - **Review before you pack:** a GUI scan shows everything a bundle would carry
   (packages, loose programs, services, groups) with sizes; only what you leave
   ticked is exported.
@@ -148,9 +153,13 @@ downloads drop that bit. Alternatively, skip this and run `bash my-pc.grab.run`.
 
 What starts ticked:
 
-- **Unticked by default:** *system* packages (the old kernel, bootloader and
-  base) and *old distro* packages. The new install has its own, and putting
-  e.g. EndeavourOS's `grub`/`dracut` on a CachyOS box would do harm.
+- **Unticked by default:** *came with old OS*, *system* (the old kernel,
+  bootloader and base) and *old distro* packages. The new install makes its own
+  choices there, and putting e.g. EndeavourOS's `grub`/`dracut` or its firewall
+  on a CachyOS box would do harm.
+- **Hardware:** the bundle records the old GPU/CPU vendor. Drivers and microcode
+  for hardware the new machine doesn't have start unticked; on CachyOS, GPU
+  drivers are left to its own `chwd`.
 - **Also unticked:** packages marked *unavailable*, which this machine can't get
   from its repos or the AUR.
 - **Follows its package:** a service whose package you untick is left out too.
@@ -325,14 +334,28 @@ grabbit is for moving *your* machine, not for managing a fleet.
   - it's already installed, or provided by an installed package (Arch: `pacman -T`);
   - it declares a conflict with something installed (repo or AUR metadata), e.g.
     `pulseaudio` vs `pipewire-pulse`. Under `--noconfirm`, pacman would refuse it anyway;
-  - it does the same job as an installed package without declaring a conflict.
-    That covers firewalls (`firewalld` vs `ufw`, which CachyOS enables) and display
-    managers. The table is `ROLE_GROUPS` in `grabbit_core.py`;
+  - one of its dependencies would conflict with something installed (Arch:
+    the full `pacman -Sp` closure is checked);
+  - apt would have to remove an installed package to install it (`apt-get -s`);
+  - it does the same job as an installed package whose service is on, without
+    declaring a conflict. That covers firewalls (`firewalld` vs `ufw`, which CachyOS
+    enables), display managers and power-profile daemons. The table is
+    `ROLE_GROUPS` in `grabbit_core.py`;
   - it's a Homebrew, pipx or pip copy of something the system package manager
     supplies here, or that the bundle installs natively.
 
   A service follows its package, so an unticked `firewalld` also leaves
-  `firewalld.service` disabled. `grabbit load` (CLI) skips the same cases.
+  `firewalld.service` disabled. Each remaining service is checked again right
+  before it's enabled, and skipped if it isn't installed, is already on,
+  conflicts (`Conflicts=`) with an enabled unit, would take an alias another
+  unit holds (`display-manager.service`), or another enabled service already
+  does its job (firewall, time sync, network manager, power profiles:
+  `SERVICE_ROLES`). `grabbit load` (CLI) skips the same package cases.
+- **Nothing gets removed.** Installs never uninstall a package to make room:
+  apt runs with `--no-remove`, zypper with `--no-force-resolution`, dnf without
+  `--allowerasing`, and pacman answers its "remove conflicting package?"
+  question with No under `--noconfirm`. A refused batch is retried one by one,
+  which isolates the package at fault.
 - **AUR packages only restore on Arch-based systems.**
 - **Homebrew on Linux** installs to `/home/linuxbrew`. grabbit adds its
   `shellenv` line for bash, zsh and fish.

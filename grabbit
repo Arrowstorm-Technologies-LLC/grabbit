@@ -124,7 +124,7 @@ detect_distro() {
     debian|ubuntu|linuxmint|pop|elementary|kali|raspbian)
       FAMILY="debian"
       PM="apt"
-      INSTALL_CMD="sudo apt update && sudo apt install -y"
+      INSTALL_CMD="sudo apt-get update && sudo apt-get install -y --no-remove"
       ;;
     arch|manjaro|endeavouros|garuda|artix)
       FAMILY="arch"
@@ -139,7 +139,7 @@ detect_distro() {
     opensuse*|suse)
       FAMILY="suse"
       PM="zypper"
-      INSTALL_CMD="sudo zypper install -y"
+      INSTALL_CMD="sudo zypper --non-interactive install --no-force-resolution"
       ;;
     alpine)
       FAMILY="alpine"
@@ -149,13 +149,13 @@ detect_distro() {
     *)
       # Fallback detection by available commands
       if command -v apt >/dev/null 2>&1; then
-        FAMILY="debian"; PM="apt"; INSTALL_CMD="sudo apt update && sudo apt install -y"
+        FAMILY="debian"; PM="apt"; INSTALL_CMD="sudo apt-get update && sudo apt-get install -y --no-remove"
       elif command -v pacman >/dev/null 2>&1; then
         FAMILY="arch"; PM="pacman"; INSTALL_CMD="sudo pacman -S --needed --noconfirm"
       elif command -v dnf >/dev/null 2>&1; then
         FAMILY="fedora"; PM="dnf"; INSTALL_CMD="sudo dnf install -y"
       elif command -v zypper >/dev/null 2>&1; then
-        FAMILY="suse"; PM="zypper"; INSTALL_CMD="sudo zypper install -y"
+        FAMILY="suse"; PM="zypper"; INSTALL_CMD="sudo zypper --non-interactive install --no-force-resolution"
       elif command -v apk >/dev/null 2>&1; then
         FAMILY="alpine"; PM="apk"; INSTALL_CMD="sudo apk add"
       else
@@ -809,7 +809,7 @@ ensure_helper() {
       if ! command -v snap >/dev/null 2>&1; then
         step "Ensuring snapd is installed (via native PM)"
         case "$PM" in
-          apt) sudo apt update && sudo apt install -y snapd ;;
+          apt) sudo apt update && sudo apt-get install -y --no-remove snapd ;;
           pacman) sudo pacman -S --needed --noconfirm snapd ;;
           dnf) sudo dnf install -y snapd ;;
           zypper) sudo zypper install -y snapd ;;
@@ -823,7 +823,7 @@ ensure_helper() {
       if ! command -v flatpak >/dev/null 2>&1; then
         step "Ensuring flatpak is installed (via native PM)"
         case "$PM" in
-          apt) sudo apt update && sudo apt install -y flatpak ;;
+          apt) sudo apt update && sudo apt-get install -y --no-remove flatpak ;;
           pacman) sudo pacman -S --needed --noconfirm flatpak ;;
           dnf) sudo dnf install -y flatpak ;;
           zypper) sudo zypper install -y flatpak ;;
@@ -898,7 +898,7 @@ get_install_command() {
   case "$src" in
     apt)
       if [[ "$FAMILY" == "debian" ]]; then
-        echo "sudo apt update && sudo apt install -y $mapped_pkg"
+        echo "sudo apt update && sudo apt-get install -y --no-remove $mapped_pkg"
       else
         # transpose
         echo "${INSTALL_CMD} $mapped_pkg"
