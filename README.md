@@ -101,8 +101,11 @@ beforehand.
 what you have installed. Use the GUI, so you can see and choose what goes in:
 
 1. `grabbit-gui --scan`, or **Scan Current System**. This captures packages with
-   their categories, loose programs, services and groups, all ticked.
-2. Untick anything you don't want to take along, on any of the three tabs. The
+   their categories, loose programs, services and groups. Everything starts
+   ticked except *Came with the OS* packages.
+2. Untick anything you don't want to take along, and tick any *Came with the OS*
+   package you do want (e.g. a tool the old installer happened to include), on
+   any of the three tabs. The
    tab titles count what's ticked, and the Files tab shows the total size.
    Unticking a symlink or its target unticks both.
 3. **Export Bundle…** (also under **File**). It shows a summary (packages per
@@ -110,8 +113,8 @@ what you have installed. Use the GUI, so you can see and choose what goes in:
    asks where to save. Only ticked items go in, whatever the filters currently
    show. A service whose package you unticked stays out too.
 
-System and old-distro packages can go in: on the new machine they start
-unticked anyway, so you get to decide again there.
+A *Came with the OS* package you tick goes in, but it still starts unticked on
+the new machine, so you get to decide again there.
 
 For scripts, or when you don't need a review, the CLI packs everything:
 
@@ -200,7 +203,8 @@ grabbit-gui --scan             # start with a scan of this machine
 
 - **Scan Current System** captures this machine the same way `pack` does:
   every explicitly installed package tagged with its category, loose programs,
-  services and groups, all ticked. It runs in the background (about 10
+  services and groups, ticked by category (*Came with the OS* starts unticked).
+  It runs in the background (about 10
   seconds).
 - **Filters:** name search, per-source checkboxes and per-category checkboxes.
   Select, deselect or invert everything visible, or click the checkbox column

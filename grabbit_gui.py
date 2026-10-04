@@ -56,8 +56,8 @@ CATEGORY_LABELS = {"user": "Installed by you", "de": "Desktop environment", "har
                    "os": "Came with the OS"}
 CATEGORY_LEGEND = ("Installed by you: added after the OS was set up.  Desktop environment: KDE/GNOME parts you "
                    "added.  Drivers & firmware: for a GPU/CPU vendor; unticked on a machine without it.  "
-                   "Came with the OS: the old install's base, kernel, boot and distro tools; the new OS brings "
-                   "its own, so these start unticked when restoring.")
+                   "Came with the OS: the install's base, kernel, boot and distro tools; the new OS brings "
+                   "its own, so these start unticked (tick any you want to carry over).")
 
 class GrabbitGUI:
     def __init__(self, root):
@@ -410,13 +410,14 @@ class GrabbitGUI:
         self._show_manifest(manifest, path)
 
     def _show_manifest(self, manifest, label, scan=False):
-        """scan=True: this machine's own capture. Everything starts ticked (the
-        audit decides what goes into a bundle); files come from their real paths."""
+        """scan=True: this machine's own capture. Packages start ticked per their
+        category ("Came with the OS" unticked: the new OS brings its own); only
+        ticked ones go into a bundle. Files come from their real paths."""
         self.is_scan = scan
         if scan:
             self.bundle_dir = None
             for p in manifest.packages:
-                p.selected = True
+                p.selected = core.DEFAULT_SELECTED.get(p.category, True)
         self.packages = [{"name": p.name, "src": p.src, "selected": p.selected,
                           "category": p.category, "via": ""} for p in manifest.packages]
         self.extras = manifest
